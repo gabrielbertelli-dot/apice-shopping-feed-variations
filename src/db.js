@@ -7,7 +7,7 @@
 // just swallow the duplicate-column error when it's already there.
 async function ensureColumn(DB, table, columnName, columnDef) {
   try {
-    await DB.exec(`ALTER TABLE ${table} ADD COLUMN ${columnName} ${columnDef}`);
+    await DB.exec(`ALTER TABLE ${table} ADD COLUMN ${columnName} ${columnDef}`, []);
   } catch (err) {
     if (!String(err.message || err).toLowerCase().includes('duplicate column')) throw err;
   }
@@ -20,7 +20,7 @@ export async function ensureSchema(DB) {
     sheet_id TEXT NOT NULL,
     sheet_tab_name TEXT NOT NULL DEFAULT 'feed',
     active INTEGER NOT NULL DEFAULT 1
-  )`);
+  )`, []);
 
   await DB.exec(`CREATE TABLE IF NOT EXISTS top_sellers (
     merchant_product_id TEXT PRIMARY KEY,
@@ -29,7 +29,7 @@ export async function ensureSchema(DB) {
     revenue_share REAL,
     rank INTEGER,
     snapshot_date TEXT
-  )`);
+  )`, []);
 
   // Lifecycle: awaiting_perspective -> pending_review -> approved | rejected.
   // The perspective (what angle to test) is decided before any copy is written:
@@ -63,12 +63,12 @@ export async function ensureSchema(DB) {
     status TEXT NOT NULL DEFAULT 'awaiting_perspective',
     created_at TEXT NOT NULL,
     approved_at TEXT
-  )`);
+  )`, []);
 
   await DB.exec(`CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
-  )`);
+  )`, []);
 
   await DB.exec(`CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,7 +78,7 @@ export async function ensureSchema(DB) {
     candidates_created INTEGER,
     details TEXT,
     error TEXT
-  )`);
+  )`, []);
 
   // Retrofit columns for tables that may already exist from before these were introduced.
   await ensureColumn(DB, 'variation_candidates', 'product_description', 'TEXT');
@@ -164,7 +164,7 @@ export async function deleteBrand(DB, name) {
 // --- Top sellers snapshot ---
 
 export async function replaceTopSellers(DB, snapshotDate, sellers) {
-  await DB.exec('DELETE FROM top_sellers');
+  await DB.exec('DELETE FROM top_sellers', []);
   for (const s of sellers) {
     await DB.exec(
       `INSERT INTO top_sellers (merchant_product_id, brand, title, revenue_share, rank, snapshot_date)
