@@ -2,9 +2,11 @@
 // We deliberately avoid building native SQL against the warehouse schema — the card
 // query is the contract, so this keeps working even if the underlying tables change.
 
-const ID_PATTERN = /(merchant|product|item|offer).*id|^id$/i;
-const BRAND_PATTERN = /brand|marca/i;
-const TITLE_PATTERN = /title|nome|product.*name|descricao/i;
+// Patterns tuned against the real "top sellers por marca" question (Yampi/beauty brands,
+// gold.vw_yampi_line_items): columns come back as bu, sku, produto, pct_receita_bu.
+const ID_PATTERN = /(merchant|product|item|offer).*id|^id$|^sku$/i;
+const BRAND_PATTERN = /brand|marca|^bu$/i;
+const TITLE_PATTERN = /title|nome|product.*name|descricao|^produto$/i;
 const SHARE_PATTERN = /share|percent|pct|particip/i;
 const REVENUE_PATTERN = /revenue|receita|faturamento|sales|vendas|valor/i;
 
