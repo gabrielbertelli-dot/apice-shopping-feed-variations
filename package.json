@@ -1,0 +1,10 @@
+{
+  "name": "shopping-feed-app",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Multi-marca: gera e publica variações de título/descrição/imagem dos top sellers de cada marca em um feed auxiliar do Google Sheets por marca, com aprovação humana da perspectiva e da copy antes de publicar.",
+  "main": "src/index.js",
+  "dependencies": {
+    "hono": "^4.6.0"
+  }
+}
