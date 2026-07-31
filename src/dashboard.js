@@ -35,7 +35,10 @@ export const DASHBOARD_HTML = `<!doctype html>
 </style>
 </head>
 <body>
-  <h1>Feed auxiliar de Shopping — multi-marca</h1>
+  <div class="row" style="justify-content: space-between; margin-top: 0;">
+    <h1 style="margin: 0;">Feed auxiliar de Shopping — multi-marca</h1>
+    <span id="user-email" style="font-size: 0.8rem; color: #888;"></span>
+  </div>
   <div class="sub">Variações de título/descrição/imagem dos top sellers de cada marca, publicadas na planilha auxiliar de cada uma após aprovação. Catálogo e feed principal de cada marca não são alterados.</div>
 
   <div class="cards" id="cards"></div>
@@ -88,6 +91,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <script>
 async function api(path, opts) {
   const res = await fetch(path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
+  if (res.status === 401) { window.location.href = '/auth/google'; throw new Error('sessão expirada'); }
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -96,6 +100,8 @@ function esc(s) { return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&
 
 async function loadStatus() {
   const status = await api('/api/status');
+  document.getElementById('user-email').innerHTML = status.userEmail
+    ? esc(status.userEmail) + ' · <a href="/auth/logout">sair</a>' : '';
   const warnEl = document.getElementById('status-warnings');
   const missing = Object.entries(status.configured).filter(([,v]) => !v).map(([k]) => k);
   warnEl.innerHTML = missing.length

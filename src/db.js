@@ -1,5 +1,13 @@
 // Schema and query helpers for the GoDeploy built-in SQLite (env.DB).
 
+// DB.query's row shape isn't guaranteed to be positional arrays (some bindings return
+// column-keyed objects instead) — normalize to arrays via the returned `columns` list so
+// the rest of this file can destructure rows positionally either way.
+export async function queryRows(DB, sql, params = []) {
+  const { columns, rows } = await DB.query(sql, params);
+  return rows.map((row) => (Array.isArray(row) ? row : columns.map((c) => row[c])));
+}
+
 // CREATE TABLE IF NOT EXISTS only handles brand-new tables — it does nothing for a table
 // that already exists with an older column set (this app was live and tested against an
 // earlier schema before some of these columns were added). This adds any column that's
@@ -22,13 +30,21 @@ export async function ensureSchema(DB) {
     active INTEGER NOT NULL DEFAULT 1
   )`, []);
 
+  // merchant_product_id alone isn't unique across brands — each brand's store assigns its
+  // own product IDs independently, so two different brands can share the same ID. The old
+  // single-column primary key let that collide; migrate any table still on that shape.
+  const topSellersDdl = await queryRows(DB, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'top_sellers'`);
+  if (topSellersDdl.length && !/PRIMARY KEY\s*\(\s*merchant_product_id\s*,\s*brand\s*\)/i.test(topSellersDdl[0][0] || '')) {
+    await DB.exec('DROP TABLE top_sellers', []);
+  }
   await DB.exec(`CREATE TABLE IF NOT EXISTS top_sellers (
-    merchant_product_id TEXT PRIMARY KEY,
-    brand TEXT,
+    merchant_product_id TEXT NOT NULL,
+    brand TEXT NOT NULL,
     title TEXT,
     revenue_share REAL,
     rank INTEGER,
-    snapshot_date TEXT
+    snapshot_date TEXT,
+    PRIMARY KEY (merchant_product_id, brand)
   )`, []);
 
   // Lifecycle: awaiting_perspective -> pending_review -> approved | rejected.
@@ -106,7 +122,7 @@ const DEFAULT_SETTINGS = {
 };
 
 export async function getSettings(DB) {
-  const { rows } = await DB.query('SELECT key, value FROM settings', []);
+  const rows = await queryRows(DB, 'SELECT key, value FROM settings');
   const settings = { ...DEFAULT_SETTINGS };
   for (const [key, value] of rows) settings[key] = value;
   return settings;
@@ -127,17 +143,18 @@ function rowToBrand(row) {
 }
 
 export async function listBrands(DB, { onlyActive } = {}) {
-  const { rows } = await DB.query(
+  const rows = await queryRows(
+    DB,
     onlyActive
       ? 'SELECT name, merchant_id, sheet_id, sheet_tab_name, active FROM brands WHERE active = 1 ORDER BY name'
-      : 'SELECT name, merchant_id, sheet_id, sheet_tab_name, active FROM brands ORDER BY name',
-    []
+      : 'SELECT name, merchant_id, sheet_id, sheet_tab_name, active FROM brands ORDER BY name'
   );
   return rows.map(rowToBrand);
 }
 
 export async function getBrand(DB, name) {
-  const { rows } = await DB.query(
+  const rows = await queryRows(
+    DB,
     'SELECT name, merchant_id, sheet_id, sheet_tab_name, active FROM brands WHERE name = ?',
     [name]
   );
@@ -167,7 +184,7 @@ export async function replaceTopSellers(DB, snapshotDate, sellers) {
   await DB.exec('DELETE FROM top_sellers', []);
   for (const s of sellers) {
     await DB.exec(
-      `INSERT INTO top_sellers (merchant_product_id, brand, title, revenue_share, rank, snapshot_date)
+      `INSERT OR REPLACE INTO top_sellers (merchant_product_id, brand, title, revenue_share, rank, snapshot_date)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [s.merchantProductId, s.brand, s.title || null, s.revenueShare ?? null, s.rank, snapshotDate]
     );
@@ -175,9 +192,9 @@ export async function replaceTopSellers(DB, snapshotDate, sellers) {
 }
 
 export async function listTopSellers(DB) {
-  const { rows } = await DB.query(
-    'SELECT merchant_product_id, brand, title, revenue_share, rank, snapshot_date FROM top_sellers ORDER BY brand, rank',
-    []
+  const rows = await queryRows(
+    DB,
+    'SELECT merchant_product_id, brand, title, revenue_share, rank, snapshot_date FROM top_sellers ORDER BY brand, rank'
   );
   return rows.map(([merchant_product_id, brand, title, revenue_share, rank, snapshot_date]) => ({
     merchantProductId: merchant_product_id,
@@ -238,7 +255,8 @@ export async function listCandidates(DB, { status, brand } = {}) {
   if (status) { clauses.push('status = ?'); params.push(status); }
   if (brand) { clauses.push('brand = ?'); params.push(brand); }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-  const { rows } = await DB.query(
+  const rows = await queryRows(
+    DB,
     `SELECT ${CANDIDATE_COLUMNS} FROM variation_candidates ${where} ORDER BY brand, merchant_product_id, variant_index`,
     params
   );
@@ -246,7 +264,7 @@ export async function listCandidates(DB, { status, brand } = {}) {
 }
 
 export async function getCandidate(DB, id) {
-  const { rows } = await DB.query(`SELECT ${CANDIDATE_COLUMNS} FROM variation_candidates WHERE id = ?`, [id]);
+  const rows = await queryRows(DB, `SELECT ${CANDIDATE_COLUMNS} FROM variation_candidates WHERE id = ?`, [id]);
   return rows.length ? rowToCandidate(rows[0]) : null;
 }
 
@@ -292,7 +310,7 @@ export async function recordRunStart(DB, startedAt) {
 }
 
 async function lastRunId(DB) {
-  const { rows } = await DB.query('SELECT id FROM runs ORDER BY id DESC LIMIT 1', []);
+  const rows = await queryRows(DB, 'SELECT id FROM runs ORDER BY id DESC LIMIT 1');
   return rows.length ? rows[0][0] : null;
 }
 
@@ -307,7 +325,8 @@ export async function recordRunEnd(DB, runId, fields) {
 }
 
 export async function listRuns(DB, limit = 20) {
-  const { rows } = await DB.query(
+  const rows = await queryRows(
+    DB,
     'SELECT id, started_at, finished_at, top_sellers_found, candidates_created, details, error FROM runs ORDER BY id DESC LIMIT ?',
     [limit]
   );

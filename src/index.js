@@ -1,25 +1,76 @@
 import { Hono } from 'hono';
-import { basicAuth } from 'hono/basic-auth';
+import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import {
   ensureSchema, getSettings, setSetting, listCandidates, getCandidate,
   updateCandidate, listApprovedCandidates, listRuns,
-  listBrands, upsertBrand, deleteBrand, getBrand
+  listBrands, upsertBrand, deleteBrand, getBrand, queryRows
 } from './db';
 import { runDiscovery } from './discover';
 import { syncApprovedFeed } from './sheets';
 import { generateCopyForPerspective } from './ai';
 import { submitImageJob, checkJobs, buildImagePrompt } from './piapp';
 import { DASHBOARD_HTML } from './dashboard';
+import {
+  SESSION_COOKIE, STATE_COOKIE, isAllowedEmail, createSessionToken, verifySessionToken,
+  googleAuthUrl, exchangeCodeForToken, fetchGoogleUserinfo
+} from './auth';
 
 const app = new Hono();
 
+function redirectUriFor(c) {
+  return new URL('/auth/google/callback', c.req.url).toString();
+}
+
+app.get('/auth/google', (c) => {
+  const state = crypto.randomUUID();
+  setCookie(c, STATE_COOKIE, state, { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 600, path: '/' });
+  return c.redirect(googleAuthUrl(c.env, state, redirectUriFor(c)));
+});
+
+app.get('/auth/google/callback', async (c) => {
+  const code = c.req.query('code');
+  const state = c.req.query('state');
+  const expectedState = getCookie(c, STATE_COOKIE);
+  deleteCookie(c, STATE_COOKIE, { path: '/' });
+
+  if (!code || !state || !expectedState || state !== expectedState) {
+    return c.text('Falha na autenticação (state inválido). Tente entrar novamente pelo link.', 400);
+  }
+  try {
+    const tokens = await exchangeCodeForToken(c.env, code, redirectUriFor(c));
+    const userinfo = await fetchGoogleUserinfo(tokens.access_token);
+    if (!userinfo.email_verified || !isAllowedEmail(userinfo.email)) {
+      return c.text(`Acesso restrito a e-mails @gocase.com.br e @gobeaute.com.br. Você entrou como ${userinfo.email}.`, 403);
+    }
+    const token = await createSessionToken(c.env.SESSION_SECRET, userinfo.email);
+    setCookie(c, SESSION_COOKIE, token, {
+      httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 60 * 60 * 24 * 7, path: '/'
+    });
+    return c.redirect('/');
+  } catch (err) {
+    return c.text(`Erro no login: ${String(err.message || err)}`, 500);
+  }
+});
+
+app.get('/auth/logout', (c) => {
+  deleteCookie(c, SESSION_COOKIE, { path: '/' });
+  return c.redirect('/');
+});
+
+async function requireSession(c) {
+  const token = getCookie(c, SESSION_COOKIE);
+  const session = token && await verifySessionToken(c.env.SESSION_SECRET, token);
+  if (session) c.set('userEmail', session.email);
+  return session;
+}
+
 app.use('/', async (c, next) => {
-  const mw = basicAuth({ username: c.env.ADMIN_USER || 'admin', password: c.env.ADMIN_PASSWORD || 'change-me' });
-  return mw(c, next);
+  if (!(await requireSession(c))) return c.redirect('/auth/google');
+  return next();
 });
 app.use('/api/*', async (c, next) => {
-  const mw = basicAuth({ username: c.env.ADMIN_USER || 'admin', password: c.env.ADMIN_PASSWORD || 'change-me' });
-  return mw(c, next);
+  if (!(await requireSession(c))) return c.json({ error: 'not_authenticated' }, 401);
+  return next();
 });
 
 app.get('/', (c) => c.html(DASHBOARD_HTML));
@@ -33,9 +84,10 @@ app.get('/api/status', async (c) => {
   const pending = await listCandidates(DB, { status: 'pending_review' });
   const approved = await listCandidates(DB, { status: 'approved' });
   const runs = await listRuns(DB, 1);
-  const { rows: topSellerRows } = await DB.query('SELECT COUNT(*) FROM top_sellers', []);
+  const topSellerRows = await queryRows(DB, 'SELECT COUNT(*) FROM top_sellers');
 
   return c.json({
+    userEmail: c.get('userEmail'),
     configured: {
       METABASE: !!(c.env.METABASE_URL && c.env.METABASE_API_KEY),
       GOOGLE_SERVICE_ACCOUNT: !!c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
