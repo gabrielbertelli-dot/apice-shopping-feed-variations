@@ -107,7 +107,9 @@ export async function ensureSchema(DB) {
   await ensureColumn(DB, 'variation_candidates', 'image_job_id', 'TEXT');
   await ensureColumn(DB, 'variation_candidates', 'image_status', "TEXT NOT NULL DEFAULT 'none'");
   await ensureColumn(DB, 'variation_candidates', 'image_error', 'TEXT');
+  await ensureColumn(DB, 'variation_candidates', 'match_method', 'TEXT');
   await ensureColumn(DB, 'runs', 'details', 'TEXT');
+  await ensureColumn(DB, 'runs', 'brand', 'TEXT');
 }
 
 const DEFAULT_SETTINGS = {
@@ -213,26 +215,26 @@ export async function insertCandidate(DB, c) {
     `INSERT INTO variation_candidates
       (merchant_product_id, brand, product_title, product_description, product_link, product_image, product_price,
        product_currency, product_gtin, product_google_category, variant_index, perspective_label, perspective_rationale,
-       status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       match_method, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       c.merchantProductId, c.brand, c.productTitle, c.productDescription || null, c.productLink, c.productImage,
       c.productPrice, c.productCurrency, c.productGtin, c.productGoogleCategory, c.variantIndex,
-      c.perspectiveLabel, c.perspectiveRationale || null, c.status || 'awaiting_perspective', c.createdAt
+      c.perspectiveLabel, c.perspectiveRationale || null, c.matchMethod || null, c.status || 'awaiting_perspective', c.createdAt
     ]
   );
 }
 
 const CANDIDATE_COLUMNS = `id, merchant_product_id, brand, product_title, product_description, product_link, product_image,
   product_price, product_currency, product_gtin, product_google_category, variant_index, perspective_label,
-  perspective_rationale, perspective_status, perspective_feedback, resolved_perspective, title_suggestion,
+  perspective_rationale, match_method, perspective_status, perspective_feedback, resolved_perspective, title_suggestion,
   description_suggestion, image_url, image_prompt, image_job_id, image_status, image_error, status, created_at, approved_at`;
 
 function rowToCandidate(row) {
   const [
     id, merchant_product_id, brand, product_title, product_description, product_link, product_image, product_price,
     product_currency, product_gtin, product_google_category, variant_index, perspective_label, perspective_rationale,
-    perspective_status, perspective_feedback, resolved_perspective, title_suggestion,
+    match_method, perspective_status, perspective_feedback, resolved_perspective, title_suggestion,
     description_suggestion, image_url, image_prompt, image_job_id, image_status, image_error, status, created_at, approved_at
   ] = row;
   return {
@@ -240,7 +242,7 @@ function rowToCandidate(row) {
     productDescription: product_description, productLink: product_link,
     productImage: product_image, productPrice: product_price, productCurrency: product_currency,
     productGtin: product_gtin, productGoogleCategory: product_google_category, variantIndex: variant_index,
-    perspectiveLabel: perspective_label, perspectiveRationale: perspective_rationale,
+    perspectiveLabel: perspective_label, perspectiveRationale: perspective_rationale, matchMethod: match_method,
     perspectiveStatus: perspective_status, perspectiveFeedback: perspective_feedback,
     resolvedPerspective: resolved_perspective, titleSuggestion: title_suggestion,
     descriptionSuggestion: description_suggestion, imageUrl: image_url, imagePrompt: image_prompt,
@@ -261,6 +263,17 @@ export async function listCandidates(DB, { status, brand } = {}) {
     params
   );
   return rows.map(rowToCandidate);
+}
+
+// Products with a non-rejected candidate already in flight — discover.js uses this to
+// skip re-proposing variations for a product it already asked a human to review.
+export async function activeCandidateProductIds(DB, brand) {
+  const rows = await queryRows(
+    DB,
+    "SELECT DISTINCT merchant_product_id FROM variation_candidates WHERE brand = ? AND status != 'rejected'",
+    [brand]
+  );
+  return new Set(rows.map((r) => String(r[0])));
 }
 
 export async function getCandidate(DB, id) {
@@ -304,8 +317,8 @@ export async function listApprovedCandidates(DB, brand) {
 
 // --- Runs ---
 
-export async function recordRunStart(DB, startedAt) {
-  const result = await DB.exec('INSERT INTO runs (started_at) VALUES (?)', [startedAt]);
+export async function recordRunStart(DB, startedAt, brand) {
+  const result = await DB.exec('INSERT INTO runs (started_at, brand) VALUES (?, ?)', [startedAt, brand || null]);
   return result.rowsWritten ? await lastRunId(DB) : null;
 }
 
@@ -327,11 +340,11 @@ export async function recordRunEnd(DB, runId, fields) {
 export async function listRuns(DB, limit = 20) {
   const rows = await queryRows(
     DB,
-    'SELECT id, started_at, finished_at, top_sellers_found, candidates_created, details, error FROM runs ORDER BY id DESC LIMIT ?',
+    'SELECT id, started_at, finished_at, top_sellers_found, candidates_created, details, error, brand FROM runs ORDER BY id DESC LIMIT ?',
     [limit]
   );
-  return rows.map(([id, started_at, finished_at, top_sellers_found, candidates_created, details, error]) => ({
+  return rows.map(([id, started_at, finished_at, top_sellers_found, candidates_created, details, error, brand]) => ({
     id, startedAt: started_at, finishedAt: finished_at, topSellersFound: top_sellers_found,
-    candidatesCreated: candidates_created, details: details ? JSON.parse(details) : null, error
+    candidatesCreated: candidates_created, details: details ? JSON.parse(details) : null, error, brand
   }));
 }

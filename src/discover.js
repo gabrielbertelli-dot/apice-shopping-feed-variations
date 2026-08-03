@@ -3,33 +3,43 @@
 // brand's own Merchant Center account and propose perspectives for a human to review.
 // No copy is generated yet at this stage — see ai.js / index.js for the accept/reject step.
 
-import { ensureSchema, getSettings, listBrands, replaceTopSellers, insertCandidate, recordRunStart, recordRunEnd } from './db';
+import {
+  ensureSchema, getSettings, listBrands, replaceTopSellers, insertCandidate,
+  activeCandidateProductIds, recordRunStart, recordRunEnd
+} from './db';
 import { fetchTopSellersByBrand } from './metabase';
-import { findProductsByOfferIds } from './merchant';
+import { listAllProducts, matchProductByTitle } from './merchant';
 import { suggestPerspectives } from './ai';
 
-export async function runDiscovery(env) {
+export async function runDiscovery(env, { brandName } = {}) {
   const DB = env.DB;
   await ensureSchema(DB);
   const startedAt = new Date().toISOString();
-  const runId = await recordRunStart(DB, startedAt);
+  const runId = await recordRunStart(DB, startedAt, brandName);
 
   try {
     const settings = await getSettings(DB);
-    const brands = await listBrands(DB, { onlyActive: true });
+    let brands = await listBrands(DB, { onlyActive: true });
     if (!brands.length) {
       throw new Error('Nenhuma marca cadastrada/ativa. Cadastre ao menos uma marca (aba Marcas) antes de rodar a descoberta.');
+    }
+    if (brandName) {
+      brands = brands.filter((b) => b.name === brandName);
+      if (!brands.length) throw new Error(`Marca "${brandName}" não encontrada ou inativa.`);
     }
     const brandByName = new Map(brands.map((b) => [b.name, b]));
 
     const topSellers = await fetchTopSellersByBrand(env, settings);
     await replaceTopSellers(DB, startedAt, topSellers);
 
+    // When scoped to one brand, sellers from other brands in the Metabase result are simply
+    // out of scope for this run — not worth reporting as "skipped" (that label is for the
+    // all-brands run, where it flags brands that showed up in sales but aren't onboarded yet).
     const sellersByBrand = new Map();
     const skippedBrands = new Set();
     for (const seller of topSellers) {
       if (!brandByName.has(seller.brand)) {
-        skippedBrands.add(seller.brand);
+        if (!brandName) skippedBrands.add(seller.brand);
         continue;
       }
       if (!sellersByBrand.has(seller.brand)) sellersByBrand.set(seller.brand, []);
@@ -38,17 +48,35 @@ export async function runDiscovery(env) {
 
     const variantsPerProduct = parseInt(settings.variants_per_product, 10) || 3;
     let candidatesCreated = 0;
+    let alreadyTracked = 0;
+    let fuzzyMatched = 0;
     const skippedProducts = [];
 
-    for (const [brandName, sellers] of sellersByBrand.entries()) {
-      const brand = brandByName.get(brandName);
-      const offerIds = sellers.map((s) => s.merchantProductId);
-      const productMap = await findProductsByOfferIds(env, brand.merchantId, offerIds);
+    for (const [currentBrand, sellers] of sellersByBrand.entries()) {
+      const brand = brandByName.get(currentBrand);
+      const catalog = await listAllProducts(env, brand.merchantId);
+      const byOfferId = new Map(catalog.map((p) => [String(p.offerId), p]));
+      // A previous run may already have proposed variations for some of these products —
+      // don't pile on duplicate candidates for the same product while those are still
+      // awaiting a human decision (or already approved/pending).
+      const activeProductIds = await activeCandidateProductIds(DB, currentBrand);
 
       for (const seller of sellers) {
-        const product = productMap.get(String(seller.merchantProductId));
+        if (activeProductIds.has(String(seller.merchantProductId))) {
+          alreadyTracked++;
+          continue;
+        }
+        let product = byOfferId.get(String(seller.merchantProductId));
+        let matchMethod = product ? 'id' : null;
         if (!product) {
-          skippedProducts.push(`${brandName}:${seller.merchantProductId}`);
+          // Sales-data ID doesn't exist in the Merchant Center catalog at all (e.g. Yampi
+          // vs Shopify-fed catalogs have unrelated ID spaces) — fall back to matching by
+          // product name before giving up on this seller entirely.
+          const fuzzy = matchProductByTitle(catalog, seller.title || '');
+          if (fuzzy) { product = fuzzy.product; matchMethod = 'title'; fuzzyMatched++; }
+        }
+        if (!product) {
+          skippedProducts.push(`${currentBrand}:${seller.merchantProductId}`);
           continue;
         }
         const perspectives = await suggestPerspectives(env, product, variantsPerProduct);
@@ -56,7 +84,7 @@ export async function runDiscovery(env) {
           const p = perspectives[i];
           await insertCandidate(DB, {
             merchantProductId: seller.merchantProductId,
-            brand: brandName,
+            brand: currentBrand,
             productTitle: product.title,
             productDescription: product.description,
             productLink: product.link,
@@ -68,6 +96,7 @@ export async function runDiscovery(env) {
             variantIndex: i + 1,
             perspectiveLabel: p.label,
             perspectiveRationale: p.rationale,
+            matchMethod,
             status: 'awaiting_perspective',
             createdAt: new Date().toISOString()
           });
@@ -76,7 +105,7 @@ export async function runDiscovery(env) {
       }
     }
 
-    const details = { skippedBrands: [...skippedBrands], skippedProducts };
+    const details = { skippedBrands: [...skippedBrands], skippedProducts, alreadyTracked, fuzzyMatched };
     await recordRunEnd(DB, runId, {
       finishedAt: new Date().toISOString(),
       topSellersFound: topSellers.length,

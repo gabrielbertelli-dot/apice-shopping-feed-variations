@@ -3,7 +3,7 @@
 // signed cookie (HMAC-SHA256 over Web Crypto, same approach as google.js's JWT signing);
 // there's no server-side session store since the app is stateless between requests.
 
-export const ALLOWED_EMAIL_DOMAINS = ['gocase.com.br', 'gobeaute.com.br'];
+export const ALLOWED_EMAIL_DOMAINS = ['gocase.com', 'gobeaute.com.br'];
 export const SESSION_COOKIE = 'gb_session';
 export const STATE_COOKIE = 'gb_oauth_state';
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days

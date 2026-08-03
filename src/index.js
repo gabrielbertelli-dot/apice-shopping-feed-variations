@@ -77,14 +77,17 @@ app.get('/', (c) => c.html(DASHBOARD_HTML));
 
 app.get('/api/status', async (c) => {
   const DB = c.env.DB;
+  const brandFilter = c.req.query('brand') || undefined;
   await ensureSchema(DB);
   const settings = await getSettings(DB);
   const brands = await listBrands(DB);
-  const awaitingPerspective = await listCandidates(DB, { status: 'awaiting_perspective' });
-  const pending = await listCandidates(DB, { status: 'pending_review' });
-  const approved = await listCandidates(DB, { status: 'approved' });
+  const awaitingPerspective = await listCandidates(DB, { status: 'awaiting_perspective', brand: brandFilter });
+  const pending = await listCandidates(DB, { status: 'pending_review', brand: brandFilter });
+  const approved = await listCandidates(DB, { status: 'approved', brand: brandFilter });
   const runs = await listRuns(DB, 1);
-  const topSellerRows = await queryRows(DB, 'SELECT COUNT(*) FROM top_sellers');
+  const topSellerRows = brandFilter
+    ? await queryRows(DB, 'SELECT COUNT(*) FROM top_sellers WHERE brand = ?', [brandFilter])
+    : await queryRows(DB, 'SELECT COUNT(*) FROM top_sellers');
 
   return c.json({
     userEmail: c.get('userEmail'),
@@ -273,17 +276,22 @@ app.post('/api/candidates/:id/check-image', async (c) => {
 
   try {
     const [job] = await checkJobs(c.env, [candidate.imageJobId]);
-    if (!job || job.status === 'queued' || job.status === 'processing') {
-      return c.json({ imageStatus: 'processing' });
-    }
-    if (job.status === 'completed') {
+    if (job && job.status === 'completed') {
       await updateCandidate(c.env.DB, id, { imageUrl: job.outputUrl, imageStatus: 'preview', imageError: null });
       return c.json({ imageStatus: 'preview', imageUrl: job.outputUrl });
     }
-    await updateCandidate(c.env.DB, id, { imageStatus: 'failed', imageError: job.error || 'falhou' });
-    return c.json({ imageStatus: 'failed', imageError: job.error });
+    // Only treat an explicit failure/error status as failed — PiApp's set of in-progress
+    // status strings isn't fully documented on our side, so anything else (including a
+    // missing job record, which can happen right after submission) is assumed still running
+    // rather than reported as a false failure. The dashboard caps how long it polls.
+    if (job && /fail|error/i.test(job.status || '')) {
+      await updateCandidate(c.env.DB, id, { imageStatus: 'failed', imageError: job.error || `status: ${job.status}` });
+      return c.json({ imageStatus: 'failed', imageError: job.error });
+    }
+    return c.json({ imageStatus: 'processing' });
   } catch (err) {
-    return c.json({ error: String(err.message || err) }, 500);
+    await updateCandidate(c.env.DB, id, { imageStatus: 'failed', imageError: String(err.message || err) });
+    return c.json({ imageStatus: 'failed', imageError: String(err.message || err) }, 500);
   }
 });
 
@@ -339,7 +347,8 @@ app.get('/api/runs', async (c) => {
 
 app.post('/api/discover-now', async (c) => {
   try {
-    const result = await runDiscovery(c.env);
+    const body = await c.req.json().catch(() => ({}));
+    const result = await runDiscovery(c.env, { brandName: body.brand || undefined });
     return c.json(result);
   } catch (err) {
     return c.json({ error: String(err.message || err) }, 500);

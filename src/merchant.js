@@ -56,12 +56,42 @@ export async function listAllProducts(env, merchantId) {
   return products;
 }
 
-export async function findProductsByOfferIds(env, merchantId, offerIds) {
-  const wanted = new Set(offerIds.map(String));
-  const all = await listAllProducts(env, merchantId);
-  const byOfferId = new Map();
-  for (const p of all) {
-    if (wanted.has(String(p.offerId))) byOfferId.set(String(p.offerId), p);
+// Fallback for when the sales-data source and the Merchant Center feed come from
+// different systems with unrelated IDs (e.g. a Yampi-sourced sales table vs a
+// Shopify-fed Merchant Center catalog — confirmed case: Ápice's top sellers have no
+// shared id/slug/gtin with their Shopify products, only a differently-formatted name:
+// "Kit X - a, b e c (5 ITENS)" vs "Kit X 5 itens - a+b+c - Ápice Cosméticos"). Requires
+// the "N itens" count to agree when both titles mention one, and a high word-overlap
+// ratio — conservative on purpose, since a wrong match puts the wrong price/image into a
+// live Shopping variation. Callers must treat a match from this path as lower-confidence
+// than an exact ID match and flag it for extra human review.
+const FUZZY_MATCH_THRESHOLD = 0.6;
+
+function normalizeWords(text) {
+  return String(text || '').toLowerCase()
+    .replace(/[^a-z0-9à-öø-ÿ\s]/gi, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
+}
+
+function extractItemCount(text) {
+  const m = String(text || '').match(/(\d+)\s*itens?/i);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+export function matchProductByTitle(products, sellerTitle) {
+  const sellerWords = normalizeWords(sellerTitle);
+  if (!sellerWords.length) return null;
+  const sellerItemCount = extractItemCount(sellerTitle);
+
+  let best = null;
+  for (const p of products) {
+    const productItemCount = extractItemCount(p.title);
+    if (sellerItemCount != null && productItemCount != null && sellerItemCount !== productItemCount) continue;
+    const productWords = new Set(normalizeWords(p.title));
+    const shared = sellerWords.filter((w) => productWords.has(w)).length;
+    const score = shared / sellerWords.length;
+    if (score >= FUZZY_MATCH_THRESHOLD && (!best || score > best.score)) best = { product: p, score };
   }
-  return byOfferId;
+  return best;
 }
