@@ -75,7 +75,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   .brand-grid .checkbox-field input { width: auto; }
   table.brands { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
   table.brands th, table.brands td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #8884; font-size: 0.85rem; }
-  table.brands tbody tr:hover td { background: #8881a; }
+  table.brands tbody tr:hover td { background: #88888818; }
   .tabs { display: flex; gap: 4px; border-bottom: 1px solid #8884; margin-bottom: 24px; overflow-x: auto; }
   .tab-btn { border: none; border-radius: 0; background: transparent; padding: 10px 14px; font-size: 0.9rem; border-bottom: 2px solid transparent; color: inherit; opacity: 0.6; white-space: nowrap; }
   .tab-btn:hover { opacity: 0.85; }
