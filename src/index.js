@@ -7,8 +7,8 @@ import {
 } from './db';
 import { runDiscovery } from './discover';
 import { syncApprovedFeed } from './sheets';
-import { generateCopyForPerspective } from './ai';
-import { submitImageJob, checkJobs, buildImagePrompt } from './piapp';
+import { generateCopyForPerspective, suggestPainAndResult } from './ai';
+import { submitImageJob, checkJobs, buildImagePrompt, buildBeforeAfterImagePrompt } from './piapp';
 import { DASHBOARD_HTML } from './dashboard';
 import {
   SESSION_COOKIE, STATE_COOKIE, isAllowedEmail, createSessionToken, verifySessionToken,
@@ -219,12 +219,25 @@ app.post('/api/candidates/:id/perspective/reject', async (c) => {
 
 // Suggested starting prompt for the editable prompt box in the dashboard — the human can
 // tweak it (add/remove attributes, change the scene) before spending a generation on it.
+// mode=before_after asks the AI for the specific pain/result this product addresses first
+// (costs a cheap text call); the default mode is purely mechanical, no AI call needed.
 app.get('/api/candidates/:id/image-prompt', async (c) => {
   await ensureSchema(c.env.DB);
   const id = c.req.param('id');
   const candidate = await getCandidate(c.env.DB, id);
   if (!candidate) return c.json({ error: 'candidato não encontrado' }, 404);
-  const prompt = candidate.imagePrompt || buildImagePrompt(candidate, candidate.resolvedPerspective || candidate.perspectiveLabel);
+  const perspective = candidate.resolvedPerspective || candidate.perspectiveLabel;
+
+  if (c.req.query('mode') === 'before_after') {
+    try {
+      const { before, after } = await suggestPainAndResult(c.env, candidate, perspective);
+      return c.json({ prompt: buildBeforeAfterImagePrompt(candidate, perspective, before, after) });
+    } catch (err) {
+      return c.json({ error: String(err.message || err) }, 500);
+    }
+  }
+
+  const prompt = candidate.imagePrompt || buildImagePrompt(candidate, perspective);
   return c.json({ prompt });
 });
 

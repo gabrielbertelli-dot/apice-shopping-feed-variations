@@ -87,3 +87,21 @@ export function buildImagePrompt(product, perspectiveText) {
     '"sale", "% off"), no logo/watermark stamped on the image, no borders, no price or promotional ' +
     'adjectives — the product itself is the only subject.';
 }
+
+// "Antes e depois" mode — a split-screen composition showing the problem the product
+// solves (left) against the result once it's solved (right), same Merchant Center
+// no-overlay/no-CTA rules as buildImagePrompt. before/after come from
+// ai.js's suggestPainAndResult, grounded in the product's real description.
+export function buildBeforeAfterImagePrompt(product, perspectiveText, before, after) {
+  const productName = product.productTitle || product.title || 'beauty product';
+  const brand = product.brand || '';
+  return 'Split-screen before/after beauty photography, one clean vertical dividing line down ' +
+    `the exact center of the frame. LEFT half: ${before} — realistic, slightly dull/desaturated ` +
+    'lighting to read as the "before" state, same subject/framing on both halves. ' +
+    `RIGHT half: ${after} — vibrant, healthy, well-lit "after" state, styled to highlight: ` +
+    `${perspectiveText}. ${brand} ${productName} placed centered in the foreground, straddling the ` +
+    'dividing line, sharp focus, clean e-commerce product styling, soft studio lighting, seamless ' +
+    'light neutral background behind both halves. No overlaid text of any kind, no call-to-action ' +
+    'text or badges (e.g. "buy now", "sale", "% off"), no logo/watermark beyond what is printed on ' +
+    'the product packaging itself, no borders, no price or promotional adjectives.';
+}

@@ -16,12 +16,36 @@ export const DASHBOARD_HTML = `<!doctype html>
   .card { border: 1px solid #8884; border-radius: 10px; padding: 14px 18px; min-width: 140px; transition: box-shadow .15s ease; }
   .card:hover { box-shadow: 0 2px 10px rgba(0,0,0,.08); }
   .card b { display: block; font-size: 1.6rem; }
+  .card.card-alert { border-color: #d97706aa; background: #d9770610; }
+  .card.card-alert b { color: #d97706; }
   section { margin-bottom: 32px; }
   h2 { font-size: 1.1rem; border-bottom: 1px solid #8884; padding-bottom: 6px; display: flex; align-items: baseline; gap: 8px; }
+  .section-summary { font-size: 1.1rem; border-bottom: 1px solid #8884; padding-bottom: 6px; cursor: pointer; }
   .count { font-size: 0.75rem; color: #888; font-weight: normal; border: none; }
-  .candidate, .brand-row { border: 1px solid #8884; border-radius: 10px; padding: 14px; margin-bottom: 12px; }
-  .candidate .meta { font-size: 0.8rem; color: #888; margin-bottom: 6px; }
-  .candidate textarea, .candidate input[type=text], .brand-row input[type=text] { width: 100%; margin-top: 4px; margin-bottom: 8px; font-family: inherit; }
+  .brand-row { border: 1px solid #8884; border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+  .candidate-wrap { margin-bottom: 8px; }
+  .detail label { display: block; margin-bottom: 12px; font-size: 0.85rem; }
+  .detail textarea, .detail input[type=text], .brand-row input[type=text] { width: 100%; margin-top: 4px; font-family: inherit; display: block; }
+  .row-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid #8884; border-radius: 10px; cursor: pointer; border-left: 4px solid #8884; }
+  .row-item:hover { background: #88888818; }
+  .row-item.urgent { border-left-color: #d97706; }
+  .row-item.review { border-left-color: #2563eb; }
+  .row-item.done { border-left-color: #16a34a; }
+  .row-item .row-thumb { width: 34px; height: 34px; border-radius: 6px; object-fit: cover; flex-shrink: 0; }
+  .row-item .row-main { flex: 1; min-width: 0; }
+  .row-item .row-title { font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-item .row-sub { font-size: 0.75rem; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-item .chevron { flex-shrink: 0; color: #888; transition: transform .15s ease; }
+  .candidate-wrap.expanded .row-item .chevron { transform: rotate(180deg); }
+  .candidate-wrap .detail { display: none; padding: 14px; border: 1px solid #8884; border-top: none; border-radius: 0 0 10px 10px; }
+  .candidate-wrap.expanded .row-item { border-radius: 10px 10px 0 0; }
+  .candidate-wrap.expanded .detail { display: block; }
+  .status-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .status-dot.gray { background: #8888; }
+  .status-dot.amber { background: #d97706; }
+  .status-dot.blue { background: #2563eb; }
+  .status-dot.green { background: #16a34a; }
+  .status-dot.red { background: #dc2626; }
   .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
   button { cursor: pointer; border-radius: 6px; border: 1px solid #8884; padding: 6px 12px; background: transparent; color: inherit; font-size: 0.9rem; transition: opacity .15s ease, background-color .15s ease; }
   button:hover { opacity: 0.8; }
@@ -96,18 +120,24 @@ export const DASHBOARD_HTML = `<!doctype html>
     </div>
 
     <section>
-      <h2>Perspectivas sugeridas (aguardando decisão) <span class="count" id="count-perspectives"></span></h2>
-      <div id="perspectives"></div>
+      <details open>
+        <summary class="section-summary">Perspectivas sugeridas (aguardando decisão) <span class="count" id="count-perspectives"></span></summary>
+        <div id="perspectives" style="margin-top: 12px;"></div>
+      </details>
     </section>
 
     <section>
-      <h2>Pendentes de revisão (copy pronta) <span class="count" id="count-pending"></span></h2>
-      <div id="pending"></div>
+      <details open>
+        <summary class="section-summary">Pendentes de revisão (copy pronta) <span class="count" id="count-pending"></span></summary>
+        <div id="pending" style="margin-top: 12px;"></div>
+      </details>
     </section>
 
     <section>
-      <h2>Aprovados (na planilha) <span class="count" id="count-approved"></span></h2>
-      <div id="approved"></div>
+      <details id="approved-details">
+        <summary class="section-summary">Aprovados (na planilha) <span class="count" id="count-approved"></span></summary>
+        <div id="approved" style="margin-top: 12px;"></div>
+      </details>
     </section>
   </div>
 
@@ -204,13 +234,13 @@ async function loadStatus() {
     : '<div class="ok">Tudo configurado.</div>';
 
   document.getElementById('cards').innerHTML = [
-    ['Marcas cadastradas', status.brandsCount],
-    ['Top sellers' + (brandFilter ? ' (' + brandFilter + ')' : ''), status.topSellersCount],
-    ['Perspectivas p/ decidir', status.awaitingPerspectiveCount],
-    ['Pendentes (copy)', status.pendingCount],
-    ['Aprovados', status.approvedCount],
-    ['Última execução', status.lastRun ? status.lastRun.startedAt.slice(0,16).replace('T',' ') + (status.lastRun.brand ? ' (' + status.lastRun.brand + ')' : ' (todas)') : '—']
-  ].map(([label, value]) => '<div class="card"><b>' + esc(String(value)) + '</b>' + esc(label) + '</div>').join('');
+    ['Marcas cadastradas', status.brandsCount, false],
+    ['Top sellers' + (brandFilter ? ' (' + brandFilter + ')' : ''), status.topSellersCount, false],
+    ['Perspectivas p/ decidir', status.awaitingPerspectiveCount, status.awaitingPerspectiveCount > 0],
+    ['Pendentes (copy)', status.pendingCount, status.pendingCount > 0],
+    ['Aprovados', status.approvedCount, false],
+    ['Última execução', status.lastRun ? status.lastRun.startedAt.slice(0,16).replace('T',' ') + (status.lastRun.brand ? ' (' + status.lastRun.brand + ')' : ' (todas)') : '—', false]
+  ].map(([label, value, alert]) => '<div class="card' + (alert ? ' card-alert' : '') + '"><b>' + esc(String(value)) + '</b>' + esc(label) + '</div>').join('');
 
   const settings = status.settings;
   const groups = {};
@@ -388,17 +418,37 @@ function fuzzyBadge(c) {
     : '';
 }
 
+function toggleRow(el) {
+  const row = el.querySelector('.row-item');
+  row.addEventListener('click', (e) => {
+    if (e.target.closest('button, input, textarea, a, select, label')) return;
+    el.classList.toggle('expanded');
+  });
+}
+
 function perspectiveCard(c) {
-  return '<div class="candidate" data-id="' + c.id + '">' +
-    '<div class="meta">' + esc(c.brand) + ' · ' + esc(c.productTitle || c.merchantProductId) + ' · variação ' + c.variantIndex + fuzzyBadge(c) + '</div>' +
-    '<div class="perspective"><b>' + esc(c.perspectiveLabel) + '</b><div class="rationale">' + esc(c.perspectiveRationale) + '</div></div>' +
-    '<div class="row"><button class="primary btn-accept">Aceitar esta perspectiva</button></div>' +
-    '<label>Ou descreva a perspectiva que prefere testar:<textarea class="f-feedback" rows="2" placeholder="Ex: focar em custo-benefício para famílias"></textarea></label>' +
-    '<div class="row"><button class="btn-reject-feedback">Usar minha perspectiva</button></div>' +
+  const thumb = c.productImage
+    ? '<img class="row-thumb" src="' + esc(c.productImage) + '">'
+    : '<span class="status-dot amber"></span>';
+  return '<div class="candidate-wrap" data-id="' + c.id + '">' +
+    '<div class="row-item urgent">' + thumb +
+      '<div class="row-main">' +
+        '<div class="row-title">' + esc(c.brand) + ' · ' + esc(c.productTitle || c.merchantProductId) + ' · variação ' + c.variantIndex + fuzzyBadge(c) + '</div>' +
+        '<div class="row-sub">' + esc(c.perspectiveLabel) + '</div>' +
+      '</div>' +
+      '<span class="chevron">▾</span>' +
+    '</div>' +
+    '<div class="detail">' +
+      '<div class="perspective"><b>' + esc(c.perspectiveLabel) + '</b><div class="rationale">' + esc(c.perspectiveRationale) + '</div></div>' +
+      '<div class="row"><button class="primary btn-accept">Aceitar esta perspectiva</button></div>' +
+      '<label>Ou descreva a perspectiva que prefere testar:<textarea class="f-feedback" rows="2" placeholder="Ex: focar em custo-benefício para famílias"></textarea></label>' +
+      '<div class="row"><button class="btn-reject-feedback">Usar minha perspectiva</button></div>' +
+    '</div>' +
   '</div>';
 }
 
 function wirePerspectiveCard(el) {
+  toggleRow(el);
   const id = el.dataset.id;
   const accept = el.querySelector('.btn-accept');
   accept.addEventListener('click', async () => {
@@ -416,13 +466,28 @@ function wirePerspectiveCard(el) {
   });
 }
 
+const IMAGE_STATUS_DOT = { none: 'gray', processing: 'amber', preview: 'blue', approved: 'green', failed: 'red' };
+const IMAGE_STATUS_LABEL = { none: 'sem imagem', processing: 'gerando imagem', preview: 'imagem p/ revisar', approved: 'imagem aprovada', failed: 'imagem falhou' };
+
 function candidateCard(c) {
   const imgStatus = c.imageStatus || 'none';
   const previewImg = c.imageUrl || c.productImage;
   const generating = imgStatus === 'processing';
   const needsImageReview = imgStatus === 'preview';
+  const rowClass = c.status === 'approved' ? 'done' : (needsImageReview || imgStatus === 'failed' ? 'urgent' : 'review');
+  const thumb = previewImg ? '<img class="row-thumb" src="' + esc(previewImg) + '">' : '<span class="status-dot ' + (IMAGE_STATUS_DOT[imgStatus] || 'gray') + '"></span>';
 
-  let imageSection = '<label>Prompt da imagem (edite antes de gerar/regerar)' +
+  let imageSection =
+    '<div class="row" style="margin-top:0;">' +
+      '<label style="font-size:0.8rem;">Modo de imagem:' +
+        '<select class="f-image-mode">' +
+          '<option value="">Otimização tradicional</option>' +
+          '<option value="before_after">Antes e depois (mostra a dor que o produto resolve)</option>' +
+        '</select>' +
+      '</label>' +
+      '<button class="btn-suggest-prompt">Sugerir prompt</button>' +
+    '</div>' +
+    '<label>Prompt da imagem (edite antes de gerar/regerar)' +
     '<textarea class="f-image-prompt" rows="3" placeholder="Carregando sugestão…">' + esc(c.imagePrompt || '') + '</textarea></label>' +
     (previewImg ? '<img class="thumb" src="' + esc(previewImg) + '">' : '') +
     (imgStatus === 'preview' ? '<div class="warn">Preview gerado — revise antes de aprovar o candidato.</div>' : '') +
@@ -436,17 +501,26 @@ function candidateCard(c) {
       '<label style="font-size:0.8rem;">ou cole uma URL manualmente:<input type="text" class="f-image" value="' + esc(c.imageUrl || '') + '"></label>' +
     '</div>';
 
-  return '<div class="candidate" data-id="' + c.id + '" data-image-status="' + esc(imgStatus) + '">' +
-    '<div class="meta">' + esc(c.brand) + ' · ' + esc(c.merchantProductId) + ' · variação ' + c.variantIndex + ' — perspectiva: ' + esc(c.resolvedPerspective) + ' · <span class="status">' + esc(c.status) + '</span>' + fuzzyBadge(c) + '</div>' +
-    '<label>Título<input type="text" class="f-title" value="' + esc(c.titleSuggestion) + '"></label>' +
-    '<label>Descrição<textarea class="f-desc" rows="3">' + esc(c.descriptionSuggestion) + '</textarea></label>' +
-    imageSection +
-    '<div class="row">' +
-      (needsImageReview || generating
-        ? '<span class="warn">Resolva a imagem acima antes de aprovar o candidato.</span>'
-        : (c.status !== 'approved' ? '<button class="primary btn-approve">Aprovar</button>' : '')) +
-      (c.status !== 'rejected' ? '<button class="danger btn-reject">Rejeitar</button>' : '') +
-      '<button class="btn-save">Salvar edição</button>' +
+  return '<div class="candidate-wrap" data-id="' + c.id + '" data-image-status="' + esc(imgStatus) + '">' +
+    '<div class="row-item ' + rowClass + '">' + thumb +
+      '<div class="row-main">' +
+        '<div class="row-title">' + esc(c.brand) + ' · ' + esc(c.merchantProductId) + ' · variação ' + c.variantIndex + fuzzyBadge(c) + '</div>' +
+        '<div class="row-sub">' + esc(c.titleSuggestion || c.resolvedPerspective) + ' · ' + (IMAGE_STATUS_LABEL[imgStatus] || imgStatus) + '</div>' +
+      '</div>' +
+      '<span class="status">' + esc(c.status) + '</span>' +
+      '<span class="chevron">▾</span>' +
+    '</div>' +
+    '<div class="detail">' +
+      '<label>Título<input type="text" class="f-title" value="' + esc(c.titleSuggestion) + '"></label>' +
+      '<label>Descrição<textarea class="f-desc" rows="3">' + esc(c.descriptionSuggestion) + '</textarea></label>' +
+      imageSection +
+      '<div class="row">' +
+        (needsImageReview || generating
+          ? '<span class="warn">Resolva a imagem acima antes de aprovar o candidato.</span>'
+          : (c.status !== 'approved' ? '<button class="primary btn-approve">Aprovar</button>' : '')) +
+        (c.status !== 'rejected' ? '<button class="danger btn-reject">Rejeitar</button>' : '') +
+        '<button class="btn-save">Salvar edição</button>' +
+      '</div>' +
     '</div>' +
   '</div>';
 }
@@ -475,6 +549,7 @@ async function ensurePromptPrefilled(el, id) {
 }
 
 function wireCandidateCard(el) {
+  toggleRow(el);
   const id = el.dataset.id;
   const getFields = () => ({
     titleSuggestion: el.querySelector('.f-title').value,
@@ -518,6 +593,20 @@ function wireCandidateCard(el) {
     await loadAll();
   });
 
+  const suggestPrompt = el.querySelector('.btn-suggest-prompt');
+  if (suggestPrompt) suggestPrompt.addEventListener('click', async () => {
+    const mode = el.querySelector('.f-image-mode').value;
+    const textarea = el.querySelector('.f-image-prompt');
+    suggestPrompt.disabled = true; const original = suggestPrompt.textContent;
+    suggestPrompt.textContent = mode === 'before_after' ? 'Pensando na dor/resultado...' : 'Sugerindo...';
+    try {
+      const qs = mode ? '?mode=' + encodeURIComponent(mode) : '';
+      const { prompt } = await api('/api/candidates/' + id + '/image-prompt' + qs);
+      textarea.value = prompt;
+    } catch (e) { alert('Erro: ' + e.message); }
+    suggestPrompt.disabled = false; suggestPrompt.textContent = original;
+  });
+
   const genImage = el.querySelector('.btn-gen-image');
   if (genImage) genImage.addEventListener('click', async () => {
     const prompt = el.querySelector('.f-image-prompt').value.trim();
@@ -546,8 +635,8 @@ async function loadCandidates() {
   document.getElementById('pending').innerHTML = pending.length ? pending.map(c => candidateCard(c)).join('') : '<div class="empty">Nenhum candidato pendente.</div>';
   document.getElementById('approved').innerHTML = approved.length ? approved.map(c => candidateCard(c)).join('') : '<div class="empty">Nenhum candidato aprovado ainda.</div>';
 
-  document.querySelectorAll('#perspectives .candidate').forEach(wirePerspectiveCard);
-  document.querySelectorAll('#pending .candidate, #approved .candidate').forEach(wireCandidateCard);
+  document.querySelectorAll('#perspectives .candidate-wrap').forEach(wirePerspectiveCard);
+  document.querySelectorAll('#pending .candidate-wrap, #approved .candidate-wrap').forEach(wireCandidateCard);
 }
 
 async function loadRuns() {

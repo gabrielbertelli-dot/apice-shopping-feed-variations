@@ -21,13 +21,14 @@ proibido usar chamada para ação, tom de anúncio ou linguagem promocional — 
 isso como violação de política de conteúdo do feed e pode reprovar o item.
 
 Regras obrigatórias para o TÍTULO:
-- Até ${TITLE_MAX} caracteres, mas as informações mais importantes (marca + tipo de produto +
+- Até ${TITLE_MAX} caracteres, mas as informações mais importantes (tipo de produto +
   atributo que diferencia esta variação) precisam caber nos primeiros 60-70 caracteres,
   porque é só isso que aparece na maioria dos posicionamentos.
-- Ordem: Marca, depois o que o produto é, depois o atributo-chave da perspectiva.
+- Ordem: o que o produto é, depois o atributo-chave da perspectiva. NÃO inclua o nome da
+  marca/loja/empresa no título — o feed já carrega a marca em outro atributo.
 - Proibido: chamada para ação ("compre já", "aproveite", "peça agora"), CAIXA ALTA,
   pontuação decorativa (!!!, ***), emojis, URLs, texto promocional ou de preço
-  ("frete grátis", "% off", "menor preço", "promoção"), nome da loja/empresa.
+  ("frete grátis", "% off", "menor preço", "promoção"), nome da marca/loja/empresa.
 - Não inventar atributo que não esteja implícito nos dados do produto informados abaixo.
 
 Regras obrigatórias para a DESCRIÇÃO:
@@ -78,8 +79,18 @@ function toSentenceCase(text) {
   return lower.charAt(0).toUpperCase() + lower.slice(1);
 }
 
-function finalizeTitle(raw) {
+// Defense-in-depth for the "no brand in the title" rule above — strip a leading brand
+// name the model included anyway (with an optional separator like "-"/":"/"|" after it).
+function stripLeadingBrand(text, brand) {
+  if (!brand) return text;
+  const escaped = String(brand).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!escaped) return text;
+  return text.replace(new RegExp(`^\\s*${escaped}\\s*[-:|–—]?\\s*`, 'i'), '');
+}
+
+function finalizeTitle(raw, brand) {
   let title = sanitizeFeedText(raw);
+  title = stripLeadingBrand(title, brand);
   if (isShouting(title)) title = toSentenceCase(title);
   return title.slice(0, TITLE_MAX);
 }
@@ -167,7 +178,39 @@ Responda APENAS com um objeto JSON, sem texto antes ou depois, no formato:
   const text = await callAI(env, prompt);
   const parsed = extractJson(text);
   return {
-    title: finalizeTitle(parsed.title),
+    title: finalizeTitle(parsed.title, product.brand),
     description: finalizeDescription(parsed.description)
+  };
+}
+
+// For the "antes e depois" image mode (piapp.js) — describes, in English (it feeds an
+// image-generation prompt), the visual "before" problem this product solves and the
+// "after" state once it's solved, grounded in the product's real description/perspective
+// rather than invented. Kept separate from generateCopyForPerspective since it's only
+// needed when the human explicitly picks the before/after image mode.
+export async function suggestPainAndResult(env, product, perspectiveText) {
+  const prompt = `Você ajuda a planejar uma imagem "antes e depois" para um produto de beleza,
+mostrando a dor/problema que o produto resolve (lado "antes") e o resultado alcançado depois de
+usá-lo (lado "depois"). Isso vai alimentar um prompt de geração de imagem, não um texto de feed.
+
+Produto atual (dados vindos do Google Merchant Center):
+${productSummary(product)}
+
+Perspectiva/ângulo desta variação (já aprovada por um humano): "${perspectiveText}"
+
+Descreva, em inglês e de forma visual/específica (para gerar imagem), baseado no benefício real
+do produto — não invente nada que não esteja implícito nos dados acima:
+- "before": a aparência do problema que esse produto resolve (ex: como fica o cabelo/pele/couro
+  cabeludo antes de usar o produto).
+- "after": a aparência depois de resolvido — aspiracional, mas plausível/realista.
+
+Responda APENAS com um objeto JSON, sem texto antes ou depois, no formato:
+{"before": "...", "after": "..."}`;
+
+  const text = await callAI(env, prompt);
+  const parsed = extractJson(text);
+  return {
+    before: String(parsed.before || '').slice(0, 300),
+    after: String(parsed.after || '').slice(0, 300)
   };
 }
