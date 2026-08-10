@@ -54,7 +54,13 @@ export async function runCatalogSyncTick(env) {
 
     for (let i = 0; i < PAGES_PER_TICK; i++) {
       const page = await fetchProductsPage(env, target.merchantId, pageToken);
-      await upsertCatalogProducts(DB, target.merchantId, page.products);
+      try {
+        await upsertCatalogProducts(DB, target.merchantId, page.products);
+      } catch (err) {
+        // Diagnostic context: which page within this tick, and how many products had
+        // already been upserted successfully before this one failed.
+        throw new Error(`page ${i + 1}/${PAGES_PER_TICK} (${page.products.length} products, ${productsDone} already done this tick): ${err.message || err}`);
+      }
       pagesDone++;
       productsDone += page.products.length;
       pageToken = page.nextPageToken || undefined;

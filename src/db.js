@@ -399,19 +399,26 @@ export async function upsertCatalogProducts(DB, merchantId, products) {
         p.googleProductCategory, p.availability, p.condition, now
       );
     }
-    await DB.exec(
-      `INSERT INTO catalog_cache
-        (merchant_id, offer_id, title, description, link, image_link, price_value, price_currency,
-         gtin, mpn, brand, google_product_category, availability, condition, updated_at)
-       VALUES ${placeholders}
-       ON CONFLICT(merchant_id, offer_id) DO UPDATE SET
-         title = excluded.title, description = excluded.description, link = excluded.link,
-         image_link = excluded.image_link, price_value = excluded.price_value,
-         price_currency = excluded.price_currency, gtin = excluded.gtin, mpn = excluded.mpn,
-         brand = excluded.brand, google_product_category = excluded.google_product_category,
-         availability = excluded.availability, condition = excluded.condition, updated_at = excluded.updated_at`,
-      params
-    );
+    try {
+      await DB.exec(
+        `INSERT INTO catalog_cache
+          (merchant_id, offer_id, title, description, link, image_link, price_value, price_currency,
+           gtin, mpn, brand, google_product_category, availability, condition, updated_at)
+         VALUES ${placeholders}
+         ON CONFLICT(merchant_id, offer_id) DO UPDATE SET
+           title = excluded.title, description = excluded.description, link = excluded.link,
+           image_link = excluded.image_link, price_value = excluded.price_value,
+           price_currency = excluded.price_currency, gtin = excluded.gtin, mpn = excluded.mpn,
+           brand = excluded.brand, google_product_category = excluded.google_product_category,
+           availability = excluded.availability, condition = excluded.condition, updated_at = excluded.updated_at`,
+        params
+      );
+    } catch (err) {
+      // Temporary diagnostic context (batch offset within this call, row/param counts) —
+      // narrows down whether the platform's SQL variable cap is per-statement or
+      // accumulated across every DB.exec() call made within one request.
+      throw new Error(`upsertCatalogProducts failed at row ${i}-${i + chunk.length} (${params.length} params this call): ${err.message || err}`);
+    }
   }
 }
 
