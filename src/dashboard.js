@@ -119,6 +119,15 @@ export const DASHBOARD_HTML = `<!doctype html>
       </label>
     </div>
 
+    <div class="row" style="margin-top: 4px;">
+      <label style="font-size: 0.85rem;">Buscar produto específico (sem esperar o Metabase):
+        <select id="discover-product-brand" style="margin-top: 2px;"><option value="">Selecione a marca</option></select>
+      </label>
+      <input type="text" id="discover-product-name" placeholder="Nome do produto (ex: Bolsa Essentials)" style="min-width: 240px;">
+      <button id="run-product-now">Buscar e gerar perspectivas</button>
+      <span id="run-product-result"></span>
+    </div>
+
     <section>
       <details open>
         <summary class="section-summary">Perspectivas sugeridas (aguardando decisão) <span class="count" id="count-perspectives"></span></summary>
@@ -294,6 +303,28 @@ document.getElementById('run-now').addEventListener('click', async () => {
   await loadAll();
 });
 
+document.getElementById('run-product-now').addEventListener('click', async () => {
+  const resultEl = document.getElementById('run-product-result');
+  const runBtn = document.getElementById('run-product-now');
+  const brand = document.getElementById('discover-product-brand').value;
+  const productName = document.getElementById('discover-product-name').value.trim();
+  if (!brand) { alert('Selecione a marca.'); return; }
+  if (!productName) { alert('Digite o nome do produto a buscar no Merchant Center.'); return; }
+  runBtn.disabled = true;
+  resultEl.textContent = 'Buscando...';
+  try {
+    const result = await api('/api/discover-product', { method: 'POST', body: JSON.stringify({ brand, productName }) });
+    let msg = result.alreadyTracked
+      ? 'Produto "' + result.matchedProduct + '" já tinha candidatos em análise (não duplicado).'
+      : 'Encontrado "' + result.matchedProduct + '" (similaridade ' + Math.round((result.matchScore || 0) * 100) + '%), ' + result.candidatesCreated + ' candidato(s) criado(s).';
+    resultEl.textContent = msg;
+  } catch (e) {
+    resultEl.textContent = 'Erro: ' + e.message;
+  }
+  runBtn.disabled = false;
+  await loadAll();
+});
+
 document.getElementById('brand-filter').addEventListener('change', async (e) => {
   brandFilter = e.target.value;
   await loadStatus();
@@ -388,6 +419,14 @@ async function loadBrands() {
   const discoverCurrent = discoverSel.value;
   discoverSel.innerHTML = activeOptionsHtml;
   discoverSel.value = brands.some(b => b.name === discoverCurrent && b.active) ? discoverCurrent : '';
+
+  // Product-specific search always needs one concrete brand chosen (no "todas" option makes
+  // sense here — the search matches by name against a single brand's Merchant Center catalog).
+  const productBrandSel = document.getElementById('discover-product-brand');
+  const productBrandCurrent = productBrandSel.value;
+  productBrandSel.innerHTML = '<option value="">Selecione a marca</option>' +
+    brands.filter(b => b.active).map(b => '<option value="' + esc(b.name) + '">' + esc(b.name) + '</option>').join('');
+  productBrandSel.value = brands.some(b => b.name === productBrandCurrent && b.active) ? productBrandCurrent : '';
 }
 
 document.getElementById('add-brand').addEventListener('click', async () => {
