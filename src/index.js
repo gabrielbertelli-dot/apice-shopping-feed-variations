@@ -405,13 +405,18 @@ app.post('/api/discover-product', async (c) => {
   }
 });
 
-// Called by the GoDeploy platform cron, not by the dashboard — no Basic Auth here,
-// authenticated instead via the shared secret the platform stamps on every cron call.
-app.post('/cron/discover', async (c) => {
-  const header = c.req.header('X-Godeploy-Cron');
-  if (!header || header !== c.env.GODEPLOY_CRON_KEY) {
-    return c.json({ error: 'unauthorized' }, 401);
-  }
+// Called by the GoDeploy platform cron, not by the dashboard. NOT authenticated via the
+// X-Godeploy-Cron header the platform is documented to stamp — that header never actually
+// matched GODEPLOY_CRON_KEY for this app (confirmed: cron calls 401'd even after the secret
+// was set to the value the app checks against, meaning the platform isn't signing with it
+// for this app). Using a secret path segment instead, known only to whoever configured the
+// cron job — same trust model, doesn't depend on the platform-side mechanism working.
+function requireCronToken(c) {
+  return c.req.param('token') && c.req.param('token') === c.env.CRON_TOKEN;
+}
+
+app.post('/cron/discover/:token', async (c) => {
+  if (!requireCronToken(c)) return c.json({ error: 'unauthorized' }, 401);
   try {
     const result = await runDiscovery(c.env);
     return c.json(result);
@@ -423,11 +428,8 @@ app.post('/cron/discover', async (c) => {
 // Advances the catalog_cache sync by a few pages (see catalogSync.js) — scheduled every
 // minute so a large catalog finishes in a handful of minutes without any single request
 // paginating it end-to-end.
-app.post('/cron/sync-catalog', async (c) => {
-  const header = c.req.header('X-Godeploy-Cron');
-  if (!header || header !== c.env.GODEPLOY_CRON_KEY) {
-    return c.json({ error: 'unauthorized' }, 401);
-  }
+app.post('/cron/sync-catalog/:token', async (c) => {
+  if (!requireCronToken(c)) return c.json({ error: 'unauthorized' }, 401);
   try {
     const result = await runCatalogSyncTick(c.env);
     return c.json(result);
