@@ -79,6 +79,15 @@ function extractItemCount(text) {
   return m ? parseInt(m[1], 10) : null;
 }
 
+// Shared by matchProductByTitle (in-memory catalog) and findProductByTitle (paginated) below.
+function scoreAgainst(productTitle, sellerWords, sellerItemCount) {
+  const productItemCount = extractItemCount(productTitle);
+  if (sellerItemCount != null && productItemCount != null && sellerItemCount !== productItemCount) return 0;
+  const productWords = new Set(normalizeWords(productTitle));
+  const shared = sellerWords.filter((w) => productWords.has(w)).length;
+  return shared / sellerWords.length;
+}
+
 export function matchProductByTitle(products, sellerTitle) {
   const sellerWords = normalizeWords(sellerTitle);
   if (!sellerWords.length) return null;
@@ -86,12 +95,49 @@ export function matchProductByTitle(products, sellerTitle) {
 
   let best = null;
   for (const p of products) {
-    const productItemCount = extractItemCount(p.title);
-    if (sellerItemCount != null && productItemCount != null && sellerItemCount !== productItemCount) continue;
-    const productWords = new Set(normalizeWords(p.title));
-    const shared = sellerWords.filter((w) => productWords.has(w)).length;
-    const score = shared / sellerWords.length;
+    const score = scoreAgainst(p.title, sellerWords, sellerItemCount);
     if (score >= FUZZY_MATCH_THRESHOLD && (!best || score > best.score)) best = { product: p, score };
   }
+  return best;
+}
+
+// Same matching logic as matchProductByTitle, but paginates the Merchant Center catalog
+// directly instead of requiring the whole thing pre-loaded via listAllProducts() — needed
+// for catalogs large enough to exceed the Worker's memory limit when fully materialized
+// (confirmed case: Gocase's phone-case catalog, hundreds of phone models × designs, blew
+// past it). Only the current page and the best match found so far are kept in memory.
+export async function findProductByTitle(env, merchantId, productName) {
+  if (!merchantId) throw new Error('merchantId não informado.');
+  const sellerWords = normalizeWords(productName);
+  if (!sellerWords.length) return null;
+  const sellerItemCount = extractItemCount(productName);
+  const token = await getGoogleAccessToken(env, SCOPES.CONTENT);
+
+  let best = null;
+  let pageToken;
+  let pagesScanned = 0;
+  const MAX_PAGES = 4000; // safety cap (~1M products) in case pagination ever misbehaves
+  do {
+    const url = new URL(`${BASE}/${merchantId}/products`);
+    url.searchParams.set('maxResults', '250');
+    if (pageToken) url.searchParams.set('pageToken', pageToken);
+
+    const response = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Falha ao listar produtos no Merchant Center (${response.status}): ${text}`);
+    }
+    const data = await response.json();
+    for (const resource of data.resources || []) {
+      const score = scoreAgainst(resource.title, sellerWords, sellerItemCount);
+      if (score >= FUZZY_MATCH_THRESHOLD && (!best || score > best.score)) best = { product: simplify(resource), score };
+    }
+    pageToken = data.nextPageToken;
+    pagesScanned++;
+    if (best && best.score >= 0.999) break; // near-perfect match — no need to keep scanning
+  } while (pageToken && pagesScanned < MAX_PAGES);
+
   return best;
 }

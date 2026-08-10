@@ -8,7 +8,7 @@ import {
   activeCandidateProductIds, recordRunStart, recordRunEnd
 } from './db';
 import { fetchTopSellersByBrand } from './metabase';
-import { listAllProducts, matchProductByTitle } from './merchant';
+import { listAllProducts, matchProductByTitle, findProductByTitle } from './merchant';
 import { suggestPerspectives } from './ai';
 
 export async function runDiscovery(env, { brandName } = {}) {
@@ -140,8 +140,10 @@ export async function runDiscoveryForProduct(env, { brandName, productName } = {
       throw new Error(`Marca "${brandName}" não encontrada ou inativa.`);
     }
 
-    const catalog = await listAllProducts(env, brand.merchantId);
-    const match = matchProductByTitle(catalog, productName);
+    // Paginated lookup, not listAllProducts() + matchProductByTitle() — a full catalog
+    // materialized in memory can exceed the Worker's memory limit for large catalogs
+    // (see findProductByTitle's comment).
+    const match = await findProductByTitle(env, brand.merchantId, productName);
     if (!match) {
       throw new Error(`Nenhum produto do catálogo da marca "${brandName}" bateu com "${productName}".`);
     }
