@@ -5,10 +5,10 @@
 
 import {
   ensureSchema, getSettings, listBrands, getBrand, replaceTopSellers, insertCandidate,
-  activeCandidateProductIds, recordRunStart, recordRunEnd, getCatalogSyncState, searchCatalogCandidates
+  activeCandidateProductIds, recordRunStart, recordRunEnd
 } from './db';
 import { fetchTopSellersByBrand } from './metabase';
-import { listAllProducts, matchProductByTitle, normalizeWordsForSearch } from './merchant';
+import { findProductByOfferId, findProductByTitleSearch } from './merchant';
 import { suggestPerspectives } from './ai';
 
 export async function runDiscovery(env, { brandName } = {}) {
@@ -54,11 +54,10 @@ export async function runDiscovery(env, { brandName } = {}) {
 
     for (const [currentBrand, sellers] of sellersByBrand.entries()) {
       const brand = brandByName.get(currentBrand);
-      const catalog = await listAllProducts(env, brand.merchantId);
-      const byOfferId = new Map(catalog.map((p) => [String(p.offerId), p]));
-      // A previous run may already have proposed variations for some of these products —
-      // don't pile on duplicate candidates for the same product while those are still
-      // awaiting a human decision (or already approved/pending).
+      // Resolved per-seller via the Reports search API (see merchant.js) instead of a
+      // listAllProducts() + in-memory lookup — a catalog the size of Gocase's (~5M SKUs)
+      // can't be materialized in memory, and this costs the same either way (a handful of
+      // sellers per brand per run).
       const activeProductIds = await activeCandidateProductIds(DB, currentBrand);
 
       for (const seller of sellers) {
@@ -66,13 +65,13 @@ export async function runDiscovery(env, { brandName } = {}) {
           alreadyTracked++;
           continue;
         }
-        let product = byOfferId.get(String(seller.merchantProductId));
+        let product = await findProductByOfferId(env, brand.merchantId, seller.merchantProductId);
         let matchMethod = product ? 'id' : null;
         if (!product) {
           // Sales-data ID doesn't exist in the Merchant Center catalog at all (e.g. Yampi
           // vs Shopify-fed catalogs have unrelated ID spaces) — fall back to matching by
           // product name before giving up on this seller entirely.
-          const fuzzy = matchProductByTitle(catalog, seller.title || '');
+          const fuzzy = await findProductByTitleSearch(env, brand.merchantId, seller.title || '');
           if (fuzzy) { product = fuzzy.product; matchMethod = 'title'; fuzzyMatched++; }
         }
         if (!product) {
@@ -140,31 +139,11 @@ export async function runDiscoveryForProduct(env, { brandName, productName } = {
       throw new Error(`Marca "${brandName}" não encontrada ou inativa.`);
     }
 
-    // Reads from the local catalog_cache mirror (kept in sync by catalogSync.js), not the
-    // live Merchant Center API directly — a full live-paginated scan risks both the Worker's
-    // memory and execution-time limits on a large catalog (confirmed case: Gocase).
-    const syncState = await getCatalogSyncState(DB, brand.merchantId);
-    if (!syncState || (!syncState.finishedAt && !syncState.inProgress)) {
-      throw new Error(
-        `Catálogo da marca "${brandName}" ainda não foi sincronizado. Use "Sincronizar catálogo" ` +
-        'na aba Marcas e aguarde — o sync roda sozinho em background (cron a cada 1 min).'
-      );
-    }
-    if (!syncState.finishedAt) {
-      throw new Error(
-        `Sincronização do catálogo da marca "${brandName}" ainda em andamento ` +
-        `(${syncState.productsDone || 0} produtos indexados até agora) — aguarde terminar antes de buscar.`
-      );
-    }
-
-    const words = normalizeWordsForSearch(productName);
-    const candidates = await searchCatalogCandidates(DB, brand.merchantId, words);
-    const match = matchProductByTitle(candidates, productName);
+    // Server-side search via the Reports API (see merchant.js) — no pre-sync needed, and
+    // costs the same regardless of catalog size.
+    const match = await findProductByTitleSearch(env, brand.merchantId, productName);
     if (!match) {
-      throw new Error(
-        `Nenhum produto do catálogo sincronizado da marca "${brandName}" bateu com "${productName}" ` +
-        `(${syncState.productsDone} produtos indexados).`
-      );
+      throw new Error(`Nenhum produto do catálogo da marca "${brandName}" bateu com "${productName}".`);
     }
     const product = match.product;
 

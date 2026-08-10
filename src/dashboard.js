@@ -347,44 +347,19 @@ function resetBrandForm() {
 
 document.getElementById('cancel-edit-brand').addEventListener('click', resetBrandForm);
 
-function catalogSyncLabel(state) {
-  if (!state) return '<span class="empty">não sincronizado</span>';
-  if (state.error) return '<span class="warn" title="' + esc(state.error) + '">falhou</span>';
-  if (state.finishedAt) return '<span class="ok">✓ ' + state.productsDone + ' produtos</span>';
-  if (state.inProgress || state.pagesDone > 0) return '<span class="warn">sincronizando… (' + state.productsDone + ' até agora)</span>';
-  return '<span class="empty">não sincronizado</span>';
-}
-
 async function loadBrands() {
   const brands = await api('/api/brands');
-  const syncStates = await api('/api/catalog-sync-status');
-  const syncByMerchant = new Map(syncStates.map(s => [s.merchantId, s]));
   const table = document.getElementById('brands-table');
-  table.innerHTML = '<tr><th>Marca</th><th>Merchant ID</th><th>Sheet ID</th><th>Aba</th><th>Status</th><th>Catálogo (busca manual)</th><th></th></tr>' +
+  table.innerHTML = '<tr><th>Marca</th><th>Merchant ID</th><th>Sheet ID</th><th>Aba</th><th>Status</th><th></th></tr>' +
     brands.map(b => '<tr>' +
       '<td>' + esc(b.name) + '</td><td>' + esc(b.merchantId) + '</td><td>' + esc(b.sheetId) + '</td><td>' + esc(b.sheetTabName) + '</td>' +
       '<td><span class="status ' + (b.active ? 'active' : 'inactive') + '">' + (b.active ? 'Ativa' : 'Inativa') + '</span></td>' +
-      '<td>' + catalogSyncLabel(syncByMerchant.get(b.merchantId)) + '</td>' +
       '<td><div class="row" style="margin-top:0;">' +
         '<button class="btn-edit-brand" data-name="' + esc(b.name) + '">Editar</button>' +
         '<button class="btn-toggle-brand" data-name="' + esc(b.name) + '">' + (b.active ? 'Desativar' : 'Ativar') + '</button>' +
-        '<button class="btn-resync-catalog" data-name="' + esc(b.name) + '">Sincronizar catálogo</button>' +
         '<button class="danger btn-del-brand" data-name="' + esc(b.name) + '">Remover</button>' +
       '</div></td>' +
     '</tr>').join('');
-
-  table.querySelectorAll('.btn-resync-catalog').forEach(btn => btn.addEventListener('click', async () => {
-    if (!confirm('Ressincronizar o catálogo de "' + btn.dataset.name + '"? Roda sozinho em background (uma leva de páginas por minuto) — pode levar alguns minutos para catálogos grandes.')) return;
-    const original = btn.textContent;
-    btn.disabled = true; btn.textContent = 'Iniciando...';
-    try {
-      await api('/api/brands/' + encodeURIComponent(btn.dataset.name) + '/resync-catalog', { method: 'POST' });
-      await loadBrands();
-    } catch (e) {
-      alert('Erro: ' + e.message);
-      btn.disabled = false; btn.textContent = original;
-    }
-  }));
 
   table.querySelectorAll('.btn-edit-brand').forEach(btn => btn.addEventListener('click', () => {
     const b = brands.find(x => x.name === btn.dataset.name);

@@ -1,10 +1,16 @@
-// Client for the Google Merchant Center Content API (v2.1), read-only.
-// We only ever read here — nothing in this app writes back to Merchant Center directly,
-// variations go out through the auxiliary Google Sheets feed instead.
+// Clients for two read-only Google Shopping APIs, both authenticated with the same service
+// account (see google.js): the Content API v2.1 for fetching a specific product's full
+// attributes, and the newer Merchant API Reports service for server-side search — neither
+// ever lists a whole catalog. That used to be listAllProducts() + in-memory matching, which
+// worked for small catalogs but exceeded the Worker's memory/execution-time limits against
+// a catalog the size of Gocase's (~5M SKUs, mostly phone-case variants). Reports search
+// finds matches server-side regardless of catalog size; Content API then fetches the one
+// or few full product records actually needed.
 
 import { getGoogleAccessToken, SCOPES } from './google';
 
-const BASE = 'https://shoppingcontent.googleapis.com/content/v2.1';
+const CONTENT_BASE = 'https://shoppingcontent.googleapis.com/content/v2.1';
+const REPORTS_BASE = 'https://merchantapi.googleapis.com/reports/v1';
 
 function simplify(p) {
   return {
@@ -26,46 +32,54 @@ function simplify(p) {
   };
 }
 
-// Fetches exactly one page (max 250) of a Merchant Center account's product list. Building
-// block for both listAllProducts() below and the incremental cron sync in catalogSync.js —
-// the sync uses this directly so it only ever holds one page in memory per tick, instead of
-// materializing (or even scanning end-to-end in one request) the whole catalog.
-export async function fetchProductsPage(env, merchantId, pageToken) {
+// Fetches one product's full attributes by its product_view/Content API composite id (e.g.
+// "online~pt~BR~offerId123" — NOT the bare offer id).
+export async function getProductById(env, merchantId, id) {
   if (!merchantId) throw new Error('merchantId não informado.');
   const token = await getGoogleAccessToken(env, SCOPES.CONTENT);
-
-  const url = new URL(`${BASE}/${merchantId}/products`);
-  url.searchParams.set('maxResults', '250');
-  if (pageToken) url.searchParams.set('pageToken', pageToken);
-
-  const response = await fetch(url.toString(), {
+  const response = await fetch(`${CONTENT_BASE}/${merchantId}/products/${encodeURIComponent(id)}`, {
     headers: { Authorization: `Bearer ${token}` }
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Falha ao listar produtos no Merchant Center (${response.status}): ${text}`);
+    throw new Error(`Falha ao buscar produto no Merchant Center (${response.status}): ${text}`);
   }
-  const data = await response.json();
-  return {
-    products: (data.resources || []).map(simplify),
-    nextPageToken: data.nextPageToken || null
-  };
+  return simplify(await response.json());
 }
 
-// Fetches the whole active product list in one request. Fine for catalogs up to a few
-// thousand SKUs; for anything larger use the catalog_cache table (see catalogSync.js +
-// db.js's searchCatalogCandidates) instead of calling this — a catalog large enough
-// (confirmed case: Gocase's phone-case catalog) can exceed the Worker's memory or
-// execution-time limit if fully paginated within a single request.
-export async function listAllProducts(env, merchantId) {
-  const products = [];
-  let pageToken;
-  do {
-    const page = await fetchProductsPage(env, merchantId, pageToken);
-    products.push(...page.products);
-    pageToken = page.nextPageToken;
-  } while (pageToken);
-  return products;
+// Runs one Merchant Center Query Language search against the product_view report table.
+// Costs the same regardless of catalog size — the filtering happens on Google's side, not
+// by us paginating and scanning every product. Returns the raw productView rows (id,
+// offerId, title — whatever's in SELECT), not full product attributes; use getProductById
+// for that once a specific match is picked.
+async function searchProductView(env, merchantId, whereClause) {
+  if (!merchantId) throw new Error('merchantId não informado.');
+  const token = await getGoogleAccessToken(env, SCOPES.CONTENT);
+  const response = await fetch(`${REPORTS_BASE}/accounts/${merchantId}/reports:search`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: `SELECT id, offer_id, title FROM product_view WHERE ${whereClause}` })
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Falha ao buscar produto via Merchant API Reports (${response.status}): ${text}`);
+  }
+  const data = await response.json();
+  return (data.results || []).map((r) => r.productView).filter(Boolean);
+}
+
+// Escapes a value for interpolation inside a single-quoted MCQL string literal.
+function escapeMcql(value) {
+  return String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+// Resolves a product by its exact offer id — the primary match path for runDiscovery's
+// Metabase-sourced top sellers. One Reports query + one Content API fetch, regardless of
+// catalog size (no listAllProducts()).
+export async function findProductByOfferId(env, merchantId, offerId) {
+  const rows = await searchProductView(env, merchantId, `offer_id = '${escapeMcql(offerId)}'`);
+  if (!rows.length) return null;
+  return getProductById(env, merchantId, rows[0].id);
 }
 
 // Fallback for when the sales-data source and the Merchant Center feed come from
@@ -99,14 +113,8 @@ function scoreAgainst(productTitle, sellerWords, sellerItemCount) {
   return shared / sellerWords.length;
 }
 
-// Scores an already-narrowed candidate list (either a small in-memory catalog, or the
-// reduced result of db.js's searchCatalogCandidates for larger ones) against a title/name
-// to match. Exported so normalizeWords is reachable too, for building the search words
-// searchCatalogCandidates needs before it can narrow the catalog_cache table down.
-export function normalizeWordsForSearch(text) {
-  return normalizeWords(text);
-}
-
+// Scores an already-narrowed candidate list (the result of a Reports title search, or any
+// small in-memory list) against a title/name to match.
 export function matchProductByTitle(products, sellerTitle) {
   const sellerWords = normalizeWords(sellerTitle);
   if (!sellerWords.length) return null;
@@ -118,4 +126,22 @@ export function matchProductByTitle(products, sellerTitle) {
     if (score >= FUZZY_MATCH_THRESHOLD && (!best || score > best.score)) best = { product: p, score };
   }
   return best;
+}
+
+// Finds the best title match for a product name without listing the whole catalog — one
+// Reports query (each search word ANDed via a case-insensitive REGEXP_MATCH) narrows the
+// candidates server-side, then matchProductByTitle's same word-overlap scoring picks the
+// best one, same as the in-memory path used to. This is what both runDiscovery's fuzzy
+// fallback and runDiscoveryForProduct's manual search use.
+export async function findProductByTitleSearch(env, merchantId, productName) {
+  const words = normalizeWords(productName);
+  if (!words.length) return null;
+  const clause = words.map((w) => `title REGEXP_MATCH '(?i).*${escapeMcql(w)}.*'`).join(' AND ');
+  const rows = await searchProductView(env, merchantId, clause);
+  if (!rows.length) return null;
+
+  const match = matchProductByTitle(rows, productName);
+  if (!match) return null;
+  const full = await getProductById(env, merchantId, match.product.id);
+  return { product: full, score: match.score };
 }
