@@ -380,14 +380,16 @@ export async function recordRunEnd(DB, runId, fields) {
 // --- Catalog cache (local mirror of Merchant Center, synced incrementally — see catalogSync.js) ---
 
 // Batches the INSERT so one call can upsert a whole page (~250 products) without one
-// exec() round trip per row, while keeping each statement's bound-parameter count modest.
-// Confirmed the hard way: BATCH=50 (750 bound params at 15 cols/row) hit "too many SQL
-// variables" on this platform's SQLite, whose limit sits well below the common default of
-// 999. 20 rows × 15 cols = 300 params, comfortably under that.
+// exec() round trip per row, while keeping each statement's bound-parameter count under
+// this platform's limit. Confirmed the hard way (via the diagnostic wrapping below):
+// BATCH=50 (750 params) AND BATCH=20 (300 params) both hit "too many SQL variables",
+// failing partway through the very first statement — consistent with Cloudflare D1's
+// documented ~100-bound-parameters-per-statement cap, much lower than vanilla SQLite's
+// default of 999. 6 rows × 15 cols = 90 params, comfortably under that.
 export async function upsertCatalogProducts(DB, merchantId, products) {
   if (!products.length) return;
   const now = new Date().toISOString();
-  const BATCH = 20;
+  const BATCH = 6;
   for (let i = 0; i < products.length; i += BATCH) {
     const chunk = products.slice(i, i + BATCH);
     const placeholders = chunk.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
