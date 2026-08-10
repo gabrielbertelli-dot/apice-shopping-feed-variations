@@ -5,7 +5,7 @@ import {
   updateCandidate, listApprovedCandidates, listRuns,
   listBrands, upsertBrand, deleteBrand, getBrand, queryRows
 } from './db';
-import { runDiscovery } from './discover';
+import { runDiscovery, runDiscoveryForProduct } from './discover';
 import { syncApprovedFeed } from './sheets';
 import { generateCopyForPerspective, suggestPainAndResult } from './ai';
 import { submitImageJob, checkJobs, buildImagePrompt, buildBeforeAfterImagePrompt } from './piapp';
@@ -362,6 +362,23 @@ app.post('/api/discover-now', async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
     const result = await runDiscovery(c.env, { brandName: body.brand || undefined });
+    return c.json(result);
+  } catch (err) {
+    return c.json({ error: String(err.message || err) }, 500);
+  }
+});
+
+// Bypasses the Metabase top-sellers query entirely — targets one product by name for a
+// given brand, regardless of its sales volume. Used to onboard a specific launch/product
+// into the same perspective/copy review pipeline without waiting for it to show up as a
+// top seller (or at all, if it never will — e.g. a new SKU).
+app.post('/api/discover-product', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    if (!body.brand || !body.productName) {
+      return c.json({ error: 'brand e productName são obrigatórios' }, 400);
+    }
+    const result = await runDiscoveryForProduct(c.env, { brandName: body.brand, productName: body.productName });
     return c.json(result);
   } catch (err) {
     return c.json({ error: String(err.message || err) }, 500);
