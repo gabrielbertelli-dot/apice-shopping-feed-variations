@@ -34,10 +34,16 @@ export async function runCatalogSyncTick(env) {
   }
 
   // Prefer resuming a sync already mid-flight (so one brand finishes before another starts);
-  // otherwise pick the first brand that has never completed one. Brands that already
-  // finished are left untouched until a human explicitly asks for a resync (see
-  // resetCatalogSyncState) — the cron shouldn't silently re-download a finished catalog.
-  const target = states.find((s) => s.inProgress && !s.finishedAt) || states.find((s) => !s.finishedAt);
+  // otherwise the first pending brand. Brands with a stored error are deprioritized behind
+  // any brand that hasn't hit one yet — otherwise a brand that fails once (e.g. a transient
+  // API error) would keep getting picked first forever (alphabetically or by insertion
+  // order) and starve every other brand's sync. They're still retried eventually, just last.
+  // Brands that already finished are left untouched until a human explicitly asks for a
+  // resync (see resetCatalogSyncState) — the cron shouldn't silently re-download a finished
+  // catalog.
+  const target = states.find((s) => s.inProgress && !s.finishedAt && !s.error)
+    || states.find((s) => !s.finishedAt && !s.error)
+    || states.find((s) => !s.finishedAt);
   if (!target) return { skipped: 'todos os catálogos já sincronizados' };
 
   try {

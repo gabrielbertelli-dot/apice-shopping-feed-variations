@@ -380,12 +380,14 @@ export async function recordRunEnd(DB, runId, fields) {
 // --- Catalog cache (local mirror of Merchant Center, synced incrementally — see catalogSync.js) ---
 
 // Batches the INSERT so one call can upsert a whole page (~250 products) without one
-// exec() round trip per row, while keeping each statement's bound-parameter count modest
-// (the underlying SQLite may cap it well below the theoretical page size × column count).
+// exec() round trip per row, while keeping each statement's bound-parameter count modest.
+// Confirmed the hard way: BATCH=50 (750 bound params at 15 cols/row) hit "too many SQL
+// variables" on this platform's SQLite, whose limit sits well below the common default of
+// 999. 20 rows × 15 cols = 300 params, comfortably under that.
 export async function upsertCatalogProducts(DB, merchantId, products) {
   if (!products.length) return;
   const now = new Date().toISOString();
-  const BATCH = 50;
+  const BATCH = 20;
   for (let i = 0; i < products.length; i += BATCH) {
     const chunk = products.slice(i, i + BATCH);
     const placeholders = chunk.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
