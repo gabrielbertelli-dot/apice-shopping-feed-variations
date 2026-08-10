@@ -5,10 +5,10 @@
 
 import {
   ensureSchema, getSettings, listBrands, getBrand, replaceTopSellers, insertCandidate,
-  activeCandidateProductIds, recordRunStart, recordRunEnd
+  activeCandidateProductIds, recordRunStart, recordRunEnd, getCatalogSyncState, searchCatalogCandidates
 } from './db';
 import { fetchTopSellersByBrand } from './metabase';
-import { listAllProducts, matchProductByTitle, findProductByTitle } from './merchant';
+import { listAllProducts, matchProductByTitle, normalizeWordsForSearch } from './merchant';
 import { suggestPerspectives } from './ai';
 
 export async function runDiscovery(env, { brandName } = {}) {
@@ -140,12 +140,31 @@ export async function runDiscoveryForProduct(env, { brandName, productName } = {
       throw new Error(`Marca "${brandName}" não encontrada ou inativa.`);
     }
 
-    // Paginated lookup, not listAllProducts() + matchProductByTitle() — a full catalog
-    // materialized in memory can exceed the Worker's memory limit for large catalogs
-    // (see findProductByTitle's comment).
-    const match = await findProductByTitle(env, brand.merchantId, productName);
+    // Reads from the local catalog_cache mirror (kept in sync by catalogSync.js), not the
+    // live Merchant Center API directly — a full live-paginated scan risks both the Worker's
+    // memory and execution-time limits on a large catalog (confirmed case: Gocase).
+    const syncState = await getCatalogSyncState(DB, brand.merchantId);
+    if (!syncState || (!syncState.finishedAt && !syncState.inProgress)) {
+      throw new Error(
+        `Catálogo da marca "${brandName}" ainda não foi sincronizado. Use "Sincronizar catálogo" ` +
+        'na aba Marcas e aguarde — o sync roda sozinho em background (cron a cada 1 min).'
+      );
+    }
+    if (!syncState.finishedAt) {
+      throw new Error(
+        `Sincronização do catálogo da marca "${brandName}" ainda em andamento ` +
+        `(${syncState.productsDone || 0} produtos indexados até agora) — aguarde terminar antes de buscar.`
+      );
+    }
+
+    const words = normalizeWordsForSearch(productName);
+    const candidates = await searchCatalogCandidates(DB, brand.merchantId, words);
+    const match = matchProductByTitle(candidates, productName);
     if (!match) {
-      throw new Error(`Nenhum produto do catálogo da marca "${brandName}" bateu com "${productName}".`);
+      throw new Error(
+        `Nenhum produto do catálogo sincronizado da marca "${brandName}" bateu com "${productName}" ` +
+        `(${syncState.productsDone} produtos indexados).`
+      );
     }
     const product = match.product;
 

@@ -3,9 +3,11 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import {
   ensureSchema, getSettings, setSetting, listCandidates, getCandidate,
   updateCandidate, listApprovedCandidates, listRuns,
-  listBrands, upsertBrand, deleteBrand, getBrand, queryRows
+  listBrands, upsertBrand, deleteBrand, getBrand, queryRows,
+  listCatalogSyncStates, resetCatalogSyncState
 } from './db';
 import { runDiscovery, runDiscoveryForProduct } from './discover';
+import { runCatalogSyncTick } from './catalogSync';
 import { syncApprovedFeed } from './sheets';
 import { generateCopyForPerspective, suggestPainAndResult } from './ai';
 import { submitImageJob, checkJobs, buildImagePrompt, buildBeforeAfterImagePrompt } from './piapp';
@@ -142,6 +144,24 @@ app.post('/api/brands', async (c) => {
 app.delete('/api/brands/:name', async (c) => {
   await ensureSchema(c.env.DB);
   await deleteBrand(c.env.DB, c.req.param('name'));
+  return c.json({ ok: true });
+});
+
+// --- Catalog cache sync (see catalogSync.js) ---
+
+app.get('/api/catalog-sync-status', async (c) => {
+  await ensureSchema(c.env.DB);
+  return c.json(await listCatalogSyncStates(c.env.DB));
+});
+
+// Forces a from-scratch resync on the next cron tick(s) — doesn't sync synchronously here,
+// since a full catalog can take many ticks; the dashboard polls /api/catalog-sync-status
+// for progress instead.
+app.post('/api/brands/:name/resync-catalog', async (c) => {
+  await ensureSchema(c.env.DB);
+  const brand = await getBrand(c.env.DB, c.req.param('name'));
+  if (!brand) return c.json({ error: 'marca não encontrada' }, 404);
+  await resetCatalogSyncState(c.env.DB, brand.merchantId, brand.name);
   return c.json({ ok: true });
 });
 
@@ -394,6 +414,22 @@ app.post('/cron/discover', async (c) => {
   }
   try {
     const result = await runDiscovery(c.env);
+    return c.json(result);
+  } catch (err) {
+    return c.json({ error: String(err.message || err) }, 500);
+  }
+});
+
+// Advances the catalog_cache sync by a few pages (see catalogSync.js) — scheduled every
+// minute so a large catalog finishes in a handful of minutes without any single request
+// paginating it end-to-end.
+app.post('/cron/sync-catalog', async (c) => {
+  const header = c.req.header('X-Godeploy-Cron');
+  if (!header || header !== c.env.GODEPLOY_CRON_KEY) {
+    return c.json({ error: 'unauthorized' }, 401);
+  }
+  try {
+    const result = await runCatalogSyncTick(c.env);
     return c.json(result);
   } catch (err) {
     return c.json({ error: String(err.message || err) }, 500);
