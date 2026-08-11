@@ -12,6 +12,14 @@ import { getGoogleAccessToken, SCOPES } from './google';
 const CONTENT_BASE = 'https://shoppingcontent.googleapis.com/content/v2.1';
 const REPORTS_BASE = 'https://merchantapi.googleapis.com/reports/v1';
 
+// One-time-per-account prerequisite before findProductByTitleSearch/findProductByOfferId
+// below will work: the calling GCP project must be registered as a developer on the target
+// Merchant Center account (accounts.developerRegistration.registerGcp). Confirmed this MUST
+// be called with a human OAuth token belonging to an Admin-level user on that account — a
+// service account (what this app authenticates as) is explicitly rejected by Google
+// ("GCP registration is not allowed for service accounts"), so this app can't do it itself.
+// See the project's setup notes for the one-time manual step (OAuth Playground + curl).
+
 function simplify(p) {
   return {
     id: p.id,
