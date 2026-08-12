@@ -8,7 +8,7 @@ import {
   activeCandidateProductIds, recordRunStart, recordRunEnd
 } from './db';
 import { fetchTopSellersByBrand } from './metabase';
-import { findProductByOfferId, findProductByTitleSearch } from './merchant';
+import { listAllProducts, matchProductByTitle, findProductByOfferId, findProductByTitleSearch } from './merchant';
 import { suggestPerspectives } from './ai';
 
 export async function runDiscovery(env, { brandName } = {}) {
@@ -54,25 +54,45 @@ export async function runDiscovery(env, { brandName } = {}) {
 
     for (const [currentBrand, sellers] of sellersByBrand.entries()) {
       const brand = brandByName.get(currentBrand);
-      // Resolved per-seller via the Reports search API (see merchant.js) instead of a
-      // listAllProducts() + in-memory lookup — a catalog the size of Gocase's (~5M SKUs)
-      // can't be materialized in memory, and this costs the same either way (a handful of
-      // sellers per brand per run).
       const activeProductIds = await activeCandidateProductIds(DB, currentBrand);
+
+      // Small/medium catalogs (the default — no setup required): list once per brand, match
+      // in memory. Large catalogs (brand.largeCatalog, e.g. Gocase's ~5M SKUs) can't be
+      // listed at all without risking the Worker's memory/execution-time limits, so each
+      // seller is resolved individually via the Merchant API Reports search instead — but
+      // that path needs a one-time per-account developer registration (see merchant.js),
+      // so it stays opt-in per brand rather than a hard dependency for everyone.
+      let catalog = null;
+      let byOfferId = null;
+      if (!brand.largeCatalog) {
+        catalog = await listAllProducts(env, brand.merchantId);
+        byOfferId = new Map(catalog.map((p) => [String(p.offerId), p]));
+      }
 
       for (const seller of sellers) {
         if (activeProductIds.has(String(seller.merchantProductId))) {
           alreadyTracked++;
           continue;
         }
-        let product = await findProductByOfferId(env, brand.merchantId, seller.merchantProductId);
-        let matchMethod = product ? 'id' : null;
-        if (!product) {
-          // Sales-data ID doesn't exist in the Merchant Center catalog at all (e.g. Yampi
-          // vs Shopify-fed catalogs have unrelated ID spaces) — fall back to matching by
-          // product name before giving up on this seller entirely.
-          const fuzzy = await findProductByTitleSearch(env, brand.merchantId, seller.title || '');
-          if (fuzzy) { product = fuzzy.product; matchMethod = 'title'; fuzzyMatched++; }
+        let product;
+        let matchMethod;
+        if (brand.largeCatalog) {
+          product = await findProductByOfferId(env, brand.merchantId, seller.merchantProductId);
+          matchMethod = product ? 'id' : null;
+          if (!product) {
+            const fuzzy = await findProductByTitleSearch(env, brand.merchantId, seller.title || '');
+            if (fuzzy) { product = fuzzy.product; matchMethod = 'title'; fuzzyMatched++; }
+          }
+        } else {
+          product = byOfferId.get(String(seller.merchantProductId));
+          matchMethod = product ? 'id' : null;
+          if (!product) {
+            // Sales-data ID doesn't exist in the Merchant Center catalog at all (e.g. Yampi
+            // vs Shopify-fed catalogs have unrelated ID spaces) — fall back to matching by
+            // product name before giving up on this seller entirely.
+            const fuzzy = matchProductByTitle(catalog, seller.title || '');
+            if (fuzzy) { product = fuzzy.product; matchMethod = 'title'; fuzzyMatched++; }
+          }
         }
         if (!product) {
           skippedProducts.push(`${currentBrand}:${seller.merchantProductId}`);
@@ -139,9 +159,11 @@ export async function runDiscoveryForProduct(env, { brandName, productName } = {
       throw new Error(`Marca "${brandName}" não encontrada ou inativa.`);
     }
 
-    // Server-side search via the Reports API (see merchant.js) — no pre-sync needed, and
-    // costs the same regardless of catalog size.
-    const match = await findProductByTitleSearch(env, brand.merchantId, productName);
+    // Same per-brand switch as runDiscovery: large catalogs search server-side via the
+    // Reports API (see merchant.js); everything else just lists + matches in memory.
+    const match = brand.largeCatalog
+      ? await findProductByTitleSearch(env, brand.merchantId, productName)
+      : matchProductByTitle(await listAllProducts(env, brand.merchantId), productName);
     if (!match) {
       throw new Error(`Nenhum produto do catálogo da marca "${brandName}" bateu com "${productName}".`);
     }

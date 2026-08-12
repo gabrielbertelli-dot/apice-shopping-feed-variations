@@ -1,11 +1,11 @@
 // Clients for two read-only Google Shopping APIs, both authenticated with the same service
-// account (see google.js): the Content API v2.1 for fetching a specific product's full
-// attributes, and the newer Merchant API Reports service for server-side search — neither
-// ever lists a whole catalog. That used to be listAllProducts() + in-memory matching, which
-// worked for small catalogs but exceeded the Worker's memory/execution-time limits against
-// a catalog the size of Gocase's (~5M SKUs, mostly phone-case variants). Reports search
-// finds matches server-side regardless of catalog size; Content API then fetches the one
-// or few full product records actually needed.
+// account (see google.js): the Content API v2.1 (listAllProducts + in-memory matching —
+// simple, no setup, fine for catalogs up to a few thousand SKUs) and the newer Merchant API
+// Reports service (findProductByOfferId/findProductByTitleSearch — server-side search, no
+// catalog-size limit, but requires a one-time per-account developer registration that only a
+// human Admin-level account can do, not this app's service account — see the note below).
+// discover.js picks between the two per brand via brands.largeCatalog, so a brand that
+// doesn't need the Reports path never depends on that registration being done.
 
 import { getGoogleAccessToken, SCOPES } from './google';
 
@@ -38,6 +38,38 @@ function simplify(p) {
     availability: p.availability || null,
     condition: p.condition || null
   };
+}
+
+// Fetches one page (max 250) of a Merchant Center account's product list.
+async function fetchProductsPage(env, merchantId, pageToken) {
+  if (!merchantId) throw new Error('merchantId não informado.');
+  const token = await getGoogleAccessToken(env, SCOPES.CONTENT);
+  const url = new URL(`${CONTENT_BASE}/${merchantId}/products`);
+  url.searchParams.set('maxResults', '250');
+  if (pageToken) url.searchParams.set('pageToken', pageToken);
+  const response = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Falha ao listar produtos no Merchant Center (${response.status}): ${text}`);
+  }
+  const data = await response.json();
+  return { products: (data.resources || []).map(simplify), nextPageToken: data.nextPageToken || null };
+}
+
+// Fetches the whole active product list in one request. Fine for catalogs up to a few
+// thousand SKUs (this is the default path — see brands.largeCatalog in discover.js); for
+// anything much larger, use findProductByOfferId/findProductByTitleSearch below instead —
+// a catalog large enough (confirmed case: Gocase, ~5M SKUs) can exceed the Worker's memory
+// or execution-time limit if fully paginated within a single request.
+export async function listAllProducts(env, merchantId) {
+  const products = [];
+  let pageToken;
+  do {
+    const page = await fetchProductsPage(env, merchantId, pageToken);
+    products.push(...page.products);
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+  return products;
 }
 
 // Fetches one product's full attributes by its product_view/Content API composite id (e.g.

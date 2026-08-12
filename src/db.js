@@ -110,6 +110,13 @@ export async function ensureSchema(DB) {
   await ensureColumn(DB, 'variation_candidates', 'match_method', 'TEXT');
   await ensureColumn(DB, 'runs', 'details', 'TEXT');
   await ensureColumn(DB, 'runs', 'brand', 'TEXT');
+  // Per-brand switch (see merchant.js/discover.js): false (default) matches products via
+  // listAllProducts() + in-memory scoring — simple, no setup, fine up to a few thousand
+  // SKUs. true switches to the Merchant API Reports search instead, for catalogs too large
+  // to list (confirmed case: Gocase, ~5M SKUs) — but that path needs a one-time per-account
+  // developer registration that only a human Admin account can do (see merchant.js), so it
+  // stays opt-in per brand rather than becoming a hard dependency for everyone.
+  await ensureColumn(DB, 'brands', 'large_catalog', 'INTEGER NOT NULL DEFAULT 0');
 }
 
 const DEFAULT_SETTINGS = {
@@ -140,39 +147,44 @@ export async function setSetting(DB, key, value) {
 // --- Brands (one Merchant Center account + one Google Sheet feed per brand/client) ---
 
 function rowToBrand(row) {
-  const [name, merchant_id, sheet_id, sheet_tab_name, active] = row;
-  return { name, merchantId: merchant_id, sheetId: sheet_id, sheetTabName: sheet_tab_name, active: !!active };
+  const [name, merchant_id, sheet_id, sheet_tab_name, active, large_catalog] = row;
+  return {
+    name, merchantId: merchant_id, sheetId: sheet_id, sheetTabName: sheet_tab_name,
+    active: !!active, largeCatalog: !!large_catalog
+  };
 }
+
+const BRAND_COLUMNS = 'name, merchant_id, sheet_id, sheet_tab_name, active, large_catalog';
 
 export async function listBrands(DB, { onlyActive } = {}) {
   const rows = await queryRows(
     DB,
     onlyActive
-      ? 'SELECT name, merchant_id, sheet_id, sheet_tab_name, active FROM brands WHERE active = 1 ORDER BY name'
-      : 'SELECT name, merchant_id, sheet_id, sheet_tab_name, active FROM brands ORDER BY name'
+      ? `SELECT ${BRAND_COLUMNS} FROM brands WHERE active = 1 ORDER BY name`
+      : `SELECT ${BRAND_COLUMNS} FROM brands ORDER BY name`
   );
   return rows.map(rowToBrand);
 }
 
 export async function getBrand(DB, name) {
-  const rows = await queryRows(
-    DB,
-    'SELECT name, merchant_id, sheet_id, sheet_tab_name, active FROM brands WHERE name = ?',
-    [name]
-  );
+  const rows = await queryRows(DB, `SELECT ${BRAND_COLUMNS} FROM brands WHERE name = ?`, [name]);
   return rows.length ? rowToBrand(rows[0]) : null;
 }
 
 export async function upsertBrand(DB, brand) {
   await DB.exec(
-    `INSERT INTO brands (name, merchant_id, sheet_id, sheet_tab_name, active)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO brands (name, merchant_id, sheet_id, sheet_tab_name, active, large_catalog)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(name) DO UPDATE SET
        merchant_id = excluded.merchant_id,
        sheet_id = excluded.sheet_id,
        sheet_tab_name = excluded.sheet_tab_name,
-       active = excluded.active`,
-    [brand.name, brand.merchantId, brand.sheetId, brand.sheetTabName || 'feed', brand.active === false ? 0 : 1]
+       active = excluded.active,
+       large_catalog = excluded.large_catalog`,
+    [
+      brand.name, brand.merchantId, brand.sheetId, brand.sheetTabName || 'feed',
+      brand.active === false ? 0 : 1, brand.largeCatalog ? 1 : 0
+    ]
   );
 }
 

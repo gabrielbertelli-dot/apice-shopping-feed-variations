@@ -161,6 +161,7 @@ export const DASHBOARD_HTML = `<!doctype html>
           <label>Google Sheet ID<input type="text" id="brand-sheet-id" placeholder="1AbC..."></label>
           <label>Aba da planilha<input type="text" id="brand-tab" placeholder="feed" value="feed"></label>
           <label class="checkbox-field"><input type="checkbox" id="brand-active" checked> Marca ativa (considerada nas descobertas)</label>
+          <label class="checkbox-field"><input type="checkbox" id="brand-large-catalog"> Catálogo muito grande (usa busca via Merchant API Reports em vez de listar tudo — exige registro prévio de developer na conta, ver docs)</label>
         </div>
         <div class="row">
           <button class="primary" id="add-brand">Adicionar / atualizar marca</button>
@@ -341,6 +342,7 @@ function resetBrandForm() {
   document.getElementById('brand-sheet-id').value = '';
   document.getElementById('brand-tab').value = 'feed';
   document.getElementById('brand-active').checked = true;
+  document.getElementById('brand-large-catalog').checked = false;
   document.getElementById('add-brand').textContent = 'Adicionar / atualizar marca';
   document.getElementById('cancel-edit-brand').hidden = true;
 }
@@ -350,10 +352,11 @@ document.getElementById('cancel-edit-brand').addEventListener('click', resetBran
 async function loadBrands() {
   const brands = await api('/api/brands');
   const table = document.getElementById('brands-table');
-  table.innerHTML = '<tr><th>Marca</th><th>Merchant ID</th><th>Sheet ID</th><th>Aba</th><th>Status</th><th></th></tr>' +
+  table.innerHTML = '<tr><th>Marca</th><th>Merchant ID</th><th>Sheet ID</th><th>Aba</th><th>Status</th><th>Catálogo</th><th></th></tr>' +
     brands.map(b => '<tr>' +
       '<td>' + esc(b.name) + '</td><td>' + esc(b.merchantId) + '</td><td>' + esc(b.sheetId) + '</td><td>' + esc(b.sheetTabName) + '</td>' +
       '<td><span class="status ' + (b.active ? 'active' : 'inactive') + '">' + (b.active ? 'Ativa' : 'Inativa') + '</span></td>' +
+      '<td>' + (b.largeCatalog ? '<span class="warn" title="Usa busca via Merchant API Reports — exige registro de developer na conta">grande</span>' : '<span class="empty">padrão</span>') + '</td>' +
       '<td><div class="row" style="margin-top:0;">' +
         '<button class="btn-edit-brand" data-name="' + esc(b.name) + '">Editar</button>' +
         '<button class="btn-toggle-brand" data-name="' + esc(b.name) + '">' + (b.active ? 'Desativar' : 'Ativar') + '</button>' +
@@ -371,6 +374,7 @@ async function loadBrands() {
     document.getElementById('brand-sheet-id').value = b.sheetId;
     document.getElementById('brand-tab').value = b.sheetTabName;
     document.getElementById('brand-active').checked = b.active;
+    document.getElementById('brand-large-catalog').checked = b.largeCatalog;
     document.getElementById('add-brand').textContent = 'Salvar alterações em "' + b.name + '"';
     document.getElementById('cancel-edit-brand').hidden = false;
     document.getElementById('brand-name').scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -382,7 +386,7 @@ async function loadBrands() {
     const original = btn.textContent;
     btn.disabled = true; btn.textContent = '...';
     try {
-      await api('/api/brands', { method: 'POST', body: JSON.stringify({ name: b.name, merchantId: b.merchantId, sheetId: b.sheetId, sheetTabName: b.sheetTabName, active: !b.active }) });
+      await api('/api/brands', { method: 'POST', body: JSON.stringify({ name: b.name, merchantId: b.merchantId, sheetId: b.sheetId, sheetTabName: b.sheetTabName, active: !b.active, largeCatalog: b.largeCatalog }) });
       await loadBrands();
     } catch (e) {
       alert('Erro: ' + e.message);
@@ -436,11 +440,12 @@ document.getElementById('add-brand').addEventListener('click', async () => {
   const sheetId = document.getElementById('brand-sheet-id').value.trim();
   const sheetTabName = document.getElementById('brand-tab').value.trim() || 'feed';
   const active = document.getElementById('brand-active').checked;
+  const largeCatalog = document.getElementById('brand-large-catalog').checked;
   if (!name || !merchantId || !sheetId) { alert('Preencha nome, Merchant ID e Sheet ID.'); return; }
   const original = btn.textContent;
   btn.disabled = true; btn.textContent = 'Salvando...';
   try {
-    await api('/api/brands', { method: 'POST', body: JSON.stringify({ name, merchantId, sheetId, sheetTabName, active }) });
+    await api('/api/brands', { method: 'POST', body: JSON.stringify({ name, merchantId, sheetId, sheetTabName, active, largeCatalog }) });
     resetBrandForm();
     await loadBrands();
   } catch (e) {
