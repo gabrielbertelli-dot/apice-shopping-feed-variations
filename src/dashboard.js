@@ -613,7 +613,11 @@ function wireCandidateCard(el) {
     approve.disabled = true; const original = approve.textContent; approve.textContent = 'Aprovando...';
     try {
       await api('/api/candidates/' + id, { method: 'PATCH', body: JSON.stringify(getFields()) });
-      await api('/api/candidates/' + id + '/approve', { method: 'POST' });
+      const result = await api('/api/candidates/' + id + '/approve', { method: 'POST' });
+      // approve() always returns 200 even when writing to the sheet fails (the candidate
+      // itself is still approved either way) — check sheetError explicitly or a failed sync
+      // goes unnoticed, same as it did for Rituária's variations.
+      if (result.sheetError) alert('Candidato aprovado, mas falhou ao sincronizar a planilha: ' + result.sheetError);
     } catch (e) {
       alert('Erro: ' + e.message);
       approve.disabled = false; approve.textContent = original;

@@ -7,24 +7,31 @@ import { getGoogleAccessToken, SCOPES } from './google';
 const SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 
 const HEADER = [
-  'id', 'title', 'description', 'link', 'image_link', 'availability', 'price',
-  'brand', 'gtin', 'mpn', 'condition', 'google_product_category', 'item_group_id', 'custom_label_0'
+  'id', 'title', 'short_title', 'description', 'link', 'image_link', 'additional_image_link',
+  'availability', 'price', 'sale_price', 'brand', 'gtin', 'mpn', 'condition',
+  'google_product_category', 'product_type', 'item_group_id', 'custom_label_0'
 ];
 
 function candidateToRow(c) {
   return [
     `${c.merchantProductId}-var${c.variantIndex}`,
     c.titleSuggestion,
+    // short_title/product_type/additional_image_link are never AI-generated — copied as-is
+    // from the original Merchant Center product (see discover.js's passthroughFields).
+    c.productShortTitle || '',
     c.descriptionSuggestion,
     c.productLink || '',
     c.imageUrl || c.productImage || '',
+    c.productAdditionalImageLinks || '',
     'in stock',
     c.productPrice || '',
+    c.productSalePrice || '',
     c.brand || '',
     c.productGtin || '',
     '',
     'new',
     c.productGoogleCategory || '',
+    c.productType || '',
     c.merchantProductId,
     'variation-test'
   ];

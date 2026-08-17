@@ -11,6 +11,19 @@ import { fetchTopSellersByBrand } from './metabase';
 import { listAllProducts, matchProductByTitle, findProductByOfferId, findProductByTitleSearch } from './merchant';
 import { suggestPerspectives } from './ai';
 
+// Original-product fields the auxiliary feed (src/sheets.js) needs verbatim — never
+// AI-generated, just copied through from whatever the Merchant Center product has.
+function passthroughFields(product) {
+  return {
+    productSalePrice: product.salePrice,
+    productShortTitle: product.shortTitle,
+    productType: product.productTypes && product.productTypes.length ? product.productTypes.join(' | ') : null,
+    productAdditionalImageLinks: product.additionalImageLinks && product.additionalImageLinks.length
+      ? product.additionalImageLinks.join(',')
+      : null
+  };
+}
+
 export async function runDiscovery(env, { brandName } = {}) {
   const DB = env.DB;
   await ensureSchema(DB);
@@ -110,6 +123,7 @@ export async function runDiscovery(env, { brandName } = {}) {
             productImage: product.imageLink,
             productPrice: product.price,
             productCurrency: product.priceCurrency,
+            ...passthroughFields(product),
             productGtin: product.gtin,
             productGoogleCategory: product.googleProductCategory,
             variantIndex: i + 1,
@@ -196,6 +210,7 @@ export async function runDiscoveryForProduct(env, { brandName, productName } = {
         productImage: product.imageLink,
         productPrice: product.price,
         productCurrency: product.priceCurrency,
+        ...passthroughFields(product),
         productGtin: product.gtin,
         productGoogleCategory: product.googleProductCategory,
         variantIndex: i + 1,

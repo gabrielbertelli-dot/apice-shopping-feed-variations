@@ -61,6 +61,10 @@ export async function ensureSchema(DB) {
     product_image TEXT,
     product_price TEXT,
     product_currency TEXT,
+    product_sale_price TEXT,
+    product_short_title TEXT,
+    product_type TEXT,
+    product_additional_image_links TEXT,
     product_gtin TEXT,
     product_google_category TEXT,
     variant_index INTEGER,
@@ -108,6 +112,12 @@ export async function ensureSchema(DB) {
   await ensureColumn(DB, 'variation_candidates', 'image_status', "TEXT NOT NULL DEFAULT 'none'");
   await ensureColumn(DB, 'variation_candidates', 'image_error', 'TEXT');
   await ensureColumn(DB, 'variation_candidates', 'match_method', 'TEXT');
+  // Original-product pass-through fields for the auxiliary feed (src/sheets.js) — never
+  // AI-generated, always copied verbatim from the Merchant Center product (see merchant.js).
+  await ensureColumn(DB, 'variation_candidates', 'product_sale_price', 'TEXT');
+  await ensureColumn(DB, 'variation_candidates', 'product_short_title', 'TEXT');
+  await ensureColumn(DB, 'variation_candidates', 'product_type', 'TEXT');
+  await ensureColumn(DB, 'variation_candidates', 'product_additional_image_links', 'TEXT');
   await ensureColumn(DB, 'runs', 'details', 'TEXT');
   await ensureColumn(DB, 'runs', 'brand', 'TEXT');
   // Per-brand switch (see merchant.js/discover.js): false (default) matches products via
@@ -226,26 +236,31 @@ export async function insertCandidate(DB, c) {
   await DB.exec(
     `INSERT INTO variation_candidates
       (merchant_product_id, brand, product_title, product_description, product_link, product_image, product_price,
-       product_currency, product_gtin, product_google_category, variant_index, perspective_label, perspective_rationale,
+       product_currency, product_sale_price, product_short_title, product_type, product_additional_image_links,
+       product_gtin, product_google_category, variant_index, perspective_label, perspective_rationale,
        match_method, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       c.merchantProductId, c.brand, c.productTitle, c.productDescription || null, c.productLink, c.productImage,
-      c.productPrice, c.productCurrency, c.productGtin, c.productGoogleCategory, c.variantIndex,
-      c.perspectiveLabel, c.perspectiveRationale || null, c.matchMethod || null, c.status || 'awaiting_perspective', c.createdAt
+      c.productPrice, c.productCurrency, c.productSalePrice || null, c.productShortTitle || null,
+      c.productType || null, c.productAdditionalImageLinks || null, c.productGtin, c.productGoogleCategory,
+      c.variantIndex, c.perspectiveLabel, c.perspectiveRationale || null, c.matchMethod || null,
+      c.status || 'awaiting_perspective', c.createdAt
     ]
   );
 }
 
 const CANDIDATE_COLUMNS = `id, merchant_product_id, brand, product_title, product_description, product_link, product_image,
-  product_price, product_currency, product_gtin, product_google_category, variant_index, perspective_label,
+  product_price, product_currency, product_sale_price, product_short_title, product_type, product_additional_image_links,
+  product_gtin, product_google_category, variant_index, perspective_label,
   perspective_rationale, match_method, perspective_status, perspective_feedback, resolved_perspective, title_suggestion,
   description_suggestion, image_url, image_prompt, image_job_id, image_status, image_error, status, created_at, approved_at`;
 
 function rowToCandidate(row) {
   const [
     id, merchant_product_id, brand, product_title, product_description, product_link, product_image, product_price,
-    product_currency, product_gtin, product_google_category, variant_index, perspective_label, perspective_rationale,
+    product_currency, product_sale_price, product_short_title, product_type, product_additional_image_links,
+    product_gtin, product_google_category, variant_index, perspective_label, perspective_rationale,
     match_method, perspective_status, perspective_feedback, resolved_perspective, title_suggestion,
     description_suggestion, image_url, image_prompt, image_job_id, image_status, image_error, status, created_at, approved_at
   ] = row;
@@ -253,6 +268,8 @@ function rowToCandidate(row) {
     id, merchantProductId: merchant_product_id, brand, productTitle: product_title,
     productDescription: product_description, productLink: product_link,
     productImage: product_image, productPrice: product_price, productCurrency: product_currency,
+    productSalePrice: product_sale_price, productShortTitle: product_short_title, productType: product_type,
+    productAdditionalImageLinks: product_additional_image_links,
     productGtin: product_gtin, productGoogleCategory: product_google_category, variantIndex: variant_index,
     perspectiveLabel: perspective_label, perspectiveRationale: perspective_rationale, matchMethod: match_method,
     perspectiveStatus: perspective_status, perspectiveFeedback: perspective_feedback,

@@ -25,15 +25,23 @@ function simplify(p) {
     id: p.id,
     offerId: p.offerId,
     title: p.title,
+    shortTitle: p.shortTitle || null,
     description: p.description,
     link: p.link,
     imageLink: p.imageLink,
+    additionalImageLinks: Array.isArray(p.additionalImageLinks) ? p.additionalImageLinks : [],
     price: p.price ? `${p.price.value} ${p.price.currency}` : null,
     priceValue: p.price ? p.price.value : null,
     priceCurrency: p.price ? p.price.currency : null,
+    // "Real" price the customer actually pays when the item is on sale — the plain `price`
+    // above stays the regular/list price either way (that's what the Content API returns).
+    salePrice: p.salePrice ? `${p.salePrice.value} ${p.salePrice.currency}` : null,
+    salePriceValue: p.salePrice ? p.salePrice.value : null,
+    salePriceCurrency: p.salePrice ? p.salePrice.currency : null,
     gtin: p.gtin || null,
     mpn: p.mpn || null,
     brand: p.brand || null,
+    productTypes: Array.isArray(p.productTypes) ? p.productTypes : [],
     googleProductCategory: p.googleProductCategory || null,
     availability: p.availability || null,
     condition: p.condition || null
