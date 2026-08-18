@@ -250,7 +250,7 @@ export async function backfillProductFields(env, { brandName } = {}) {
   if (!approved.length) return { updated: 0, errors: [], syncResults: {} };
 
   const brandCache = new Map();
-  const catalogCache = new Map(); // merchantId -> Map(offerId -> product), for non-large brands
+  const catalogCache = new Map(); // merchantId -> { catalog, byOfferId }, for non-large brands
   let updated = 0;
   const errors = [];
   const brandsToSync = new Set();
@@ -264,20 +264,34 @@ export async function backfillProductFields(env, { brandName } = {}) {
       }
       if (!brand) { errors.push(`${candidate.brand}:${candidate.merchantProductId} — marca não encontrada`); continue; }
 
+      // Same two-step resolution as runDiscovery: merchant_product_id is the sales-data ID
+      // (Metabase), which for some brands (e.g. Yampi-sourced ones — see matchProductByTitle's
+      // note) never matches the Merchant Center offerId at all, even for candidates that
+      // were successfully matched at discovery time via the title fallback. Retry by title
+      // (using the original product_title stored on the candidate) before giving up.
       let product;
+      let catalog;
       if (brand.largeCatalog) {
         product = await findProductByOfferId(env, brand.merchantId, candidate.merchantProductId);
-      } else {
-        let byOfferId = catalogCache.get(brand.merchantId);
-        if (!byOfferId) {
-          const catalog = await listAllProducts(env, brand.merchantId);
-          byOfferId = new Map(catalog.map((p) => [String(p.offerId), p]));
-          catalogCache.set(brand.merchantId, byOfferId);
+        if (!product) {
+          const fuzzy = await findProductByTitleSearch(env, brand.merchantId, candidate.productTitle || '');
+          if (fuzzy) product = fuzzy.product;
         }
-        product = byOfferId.get(String(candidate.merchantProductId));
+      } else {
+        let entry = catalogCache.get(brand.merchantId);
+        if (!entry) {
+          catalog = await listAllProducts(env, brand.merchantId);
+          entry = { catalog, byOfferId: new Map(catalog.map((p) => [String(p.offerId), p])) };
+          catalogCache.set(brand.merchantId, entry);
+        }
+        product = entry.byOfferId.get(String(candidate.merchantProductId));
+        if (!product) {
+          const fuzzy = matchProductByTitle(entry.catalog, candidate.productTitle || '');
+          if (fuzzy) product = fuzzy.product;
+        }
       }
       if (!product) {
-        errors.push(`${candidate.brand}:${candidate.merchantProductId} — produto não encontrado no Merchant Center`);
+        errors.push(`${candidate.brand}:${candidate.merchantProductId} (${candidate.productTitle}) — produto não encontrado no Merchant Center`);
         continue;
       }
 
