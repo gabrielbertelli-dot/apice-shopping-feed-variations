@@ -5,7 +5,7 @@ import {
   updateCandidate, listApprovedCandidates, listRuns,
   listBrands, upsertBrand, deleteBrand, getBrand, queryRows
 } from './db';
-import { runDiscovery, runDiscoveryForProduct } from './discover';
+import { runDiscovery, runDiscoveryForProduct, backfillProductFields } from './discover';
 import { syncApprovedFeed } from './sheets';
 import { generateCopyForPerspective, suggestPainAndResult } from './ai';
 import { submitImageJob, checkJobs, buildImagePrompt, buildBeforeAfterImagePrompt } from './piapp';
@@ -394,6 +394,18 @@ app.post('/api/discover-product', async (c) => {
 function requireCronToken(c) {
   return c.req.param('token') && c.req.param('token') === c.env.CRON_TOKEN;
 }
+
+// TEMPORARY — one-off backfill for candidates approved before productSalePrice/
+// productShortTitle/productType/productAdditionalImageLinks existed. Remove once run.
+app.get('/debug/backfill-product-fields/:token', async (c) => {
+  if (!requireCronToken(c)) return c.json({ error: 'unauthorized' }, 401);
+  try {
+    const result = await backfillProductFields(c.env, { brandName: c.req.query('brand') || undefined });
+    return c.json(result);
+  } catch (err) {
+    return c.json({ error: String(err.message || err) }, 500);
+  }
+});
 
 app.post('/cron/discover/:token', async (c) => {
   if (!requireCronToken(c)) return c.json({ error: 'unauthorized' }, 401);

@@ -322,7 +322,11 @@ const CANDIDATE_COLUMN_MAP = {
   approvedAt: 'approved_at',
   perspectiveStatus: 'perspective_status',
   perspectiveFeedback: 'perspective_feedback',
-  resolvedPerspective: 'resolved_perspective'
+  resolvedPerspective: 'resolved_perspective',
+  productSalePrice: 'product_sale_price',
+  productShortTitle: 'product_short_title',
+  productType: 'product_type',
+  productAdditionalImageLinks: 'product_additional_image_links'
 };
 
 export async function updateCandidate(DB, id, fields) {

@@ -5,11 +5,12 @@
 
 import {
   ensureSchema, getSettings, listBrands, getBrand, replaceTopSellers, insertCandidate,
-  activeCandidateProductIds, recordRunStart, recordRunEnd
+  activeCandidateProductIds, recordRunStart, recordRunEnd, listApprovedCandidates, updateCandidate
 } from './db';
 import { fetchTopSellersByBrand } from './metabase';
 import { listAllProducts, matchProductByTitle, findProductByOfferId, findProductByTitleSearch } from './merchant';
 import { suggestPerspectives } from './ai';
+import { syncApprovedFeed } from './sheets';
 
 // Original-product fields the auxiliary feed (src/sheets.js) needs verbatim — never
 // AI-generated, just copied through from whatever the Merchant Center product has.
@@ -236,4 +237,68 @@ export async function runDiscoveryForProduct(env, { brandName, productName } = {
     await recordRunEnd(DB, runId, { finishedAt: new Date().toISOString(), error: String(err.message || err) });
     throw err;
   }
+}
+
+// One-off historical fixup: approved candidates created before productSalePrice/
+// productShortTitle/productType/productAdditionalImageLinks existed have those columns
+// empty. Re-fetches each one's current Merchant Center product and fills them in, then
+// resyncs every affected brand's sheet so the feed actually reflects it.
+export async function backfillProductFields(env, { brandName } = {}) {
+  const DB = env.DB;
+  await ensureSchema(DB);
+  const approved = await listApprovedCandidates(DB, brandName);
+  if (!approved.length) return { updated: 0, errors: [], syncResults: {} };
+
+  const brandCache = new Map();
+  const catalogCache = new Map(); // merchantId -> Map(offerId -> product), for non-large brands
+  let updated = 0;
+  const errors = [];
+  const brandsToSync = new Set();
+
+  for (const candidate of approved) {
+    try {
+      let brand = brandCache.get(candidate.brand);
+      if (brand === undefined) {
+        brand = await getBrand(DB, candidate.brand);
+        brandCache.set(candidate.brand, brand);
+      }
+      if (!brand) { errors.push(`${candidate.brand}:${candidate.merchantProductId} — marca não encontrada`); continue; }
+
+      let product;
+      if (brand.largeCatalog) {
+        product = await findProductByOfferId(env, brand.merchantId, candidate.merchantProductId);
+      } else {
+        let byOfferId = catalogCache.get(brand.merchantId);
+        if (!byOfferId) {
+          const catalog = await listAllProducts(env, brand.merchantId);
+          byOfferId = new Map(catalog.map((p) => [String(p.offerId), p]));
+          catalogCache.set(brand.merchantId, byOfferId);
+        }
+        product = byOfferId.get(String(candidate.merchantProductId));
+      }
+      if (!product) {
+        errors.push(`${candidate.brand}:${candidate.merchantProductId} — produto não encontrado no Merchant Center`);
+        continue;
+      }
+
+      await updateCandidate(DB, candidate.id, passthroughFields(product));
+      updated++;
+      brandsToSync.add(candidate.brand);
+    } catch (err) {
+      errors.push(`${candidate.brand}:${candidate.merchantProductId} — ${String(err.message || err)}`);
+    }
+  }
+
+  const syncResults = {};
+  for (const currentBrand of brandsToSync) {
+    try {
+      const brand = brandCache.get(currentBrand);
+      const approvedForBrand = await listApprovedCandidates(DB, currentBrand);
+      syncResults[currentBrand] = await syncApprovedFeed(env, brand.sheetId, brand.sheetTabName, approvedForBrand);
+    } catch (err) {
+      errors.push(`${currentBrand}: falha ao resincronizar planilha — ${String(err.message || err)}`);
+    }
+  }
+
+  return { updated, errors, syncResults };
 }
