@@ -12,6 +12,16 @@ import { listAllProducts, matchProductByTitle, findProductByOfferId, findProduct
 import { suggestPerspectives } from './ai';
 import { syncApprovedFeed } from './sheets';
 
+// Metabase's brand string and the registered brand name are two independently-typed values
+// (one from the sales data warehouse, one from whoever filled the "Marcas" form) — matching
+// them case-sensitively silently drops an entire brand's top sellers the moment they differ
+// by case (confirmed case: Kokeshi was registered as "Kokeshi", Metabase's query returns
+// "kokeshi" — every run skipped it with candidatesCreated: 0 and no visible error, since
+// skippedBrands only surfaces in the all-brands run-now message, easy to miss).
+function normalizeBrandKey(name) {
+  return String(name || '').trim().toLowerCase();
+}
+
 // Original-product fields the auxiliary feed (src/sheets.js) needs verbatim — never
 // AI-generated, just copied through from whatever the Merchant Center product has.
 function passthroughFields(product) {
@@ -38,26 +48,31 @@ export async function runDiscovery(env, { brandName } = {}) {
       throw new Error('Nenhuma marca cadastrada/ativa. Cadastre ao menos uma marca (aba Marcas) antes de rodar a descoberta.');
     }
     if (brandName) {
-      brands = brands.filter((b) => b.name === brandName);
+      brands = brands.filter((b) => normalizeBrandKey(b.name) === normalizeBrandKey(brandName));
       if (!brands.length) throw new Error(`Marca "${brandName}" não encontrada ou inativa.`);
     }
-    const brandByName = new Map(brands.map((b) => [b.name, b]));
+    const brandByKey = new Map(brands.map((b) => [normalizeBrandKey(b.name), b]));
 
     const topSellers = await fetchTopSellersByBrand(env, settings);
     await replaceTopSellers(DB, startedAt, topSellers);
 
+    // Grouped under the registered brand's canonical name (brand.name), not Metabase's raw
+    // seller.brand string — those two only need to match case/whitespace-insensitively
+    // (see normalizeBrandKey), not literally, and everything downstream (candidates,
+    // active-product lookups, the dashboard's brand filter) keys off the registered name.
     // When scoped to one brand, sellers from other brands in the Metabase result are simply
     // out of scope for this run — not worth reporting as "skipped" (that label is for the
     // all-brands run, where it flags brands that showed up in sales but aren't onboarded yet).
     const sellersByBrand = new Map();
     const skippedBrands = new Set();
     for (const seller of topSellers) {
-      if (!brandByName.has(seller.brand)) {
+      const brand = brandByKey.get(normalizeBrandKey(seller.brand));
+      if (!brand) {
         if (!brandName) skippedBrands.add(seller.brand);
         continue;
       }
-      if (!sellersByBrand.has(seller.brand)) sellersByBrand.set(seller.brand, []);
-      sellersByBrand.get(seller.brand).push(seller);
+      if (!sellersByBrand.has(brand.name)) sellersByBrand.set(brand.name, []);
+      sellersByBrand.get(brand.name).push(seller);
     }
 
     const variantsPerProduct = parseInt(settings.variants_per_product, 10) || 3;
@@ -67,7 +82,7 @@ export async function runDiscovery(env, { brandName } = {}) {
     const skippedProducts = [];
 
     for (const [currentBrand, sellers] of sellersByBrand.entries()) {
-      const brand = brandByName.get(currentBrand);
+      const brand = brandByKey.get(normalizeBrandKey(currentBrand));
       const activeProductIds = await activeCandidateProductIds(DB, currentBrand);
 
       // Small/medium catalogs (the default — no setup required): list once per brand, match
