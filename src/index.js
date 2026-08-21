@@ -163,11 +163,16 @@ app.patch('/api/candidates/:id', async (c) => {
 });
 
 // Human accepts the AI-suggested perspective as-is -> generate copy for it right away.
+// includeProductName (default true): whether the title should still reference what the
+// base product is, or be written purely from the perspective — see the dashboard's
+// perspective-card checkbox.
 app.post('/api/candidates/:id/perspective/accept', async (c) => {
   await ensureSchema(c.env.DB);
   const id = c.req.param('id');
   const candidate = await getCandidate(c.env.DB, id);
   if (!candidate) return c.json({ error: 'candidato não encontrado' }, 404);
+  const body = await c.req.json().catch(() => ({}));
+  const includeProductName = body.includeProductName !== false;
 
   const copy = await generateCopyForPerspective(c.env, {
     brand: candidate.brand,
@@ -175,7 +180,7 @@ app.post('/api/candidates/:id/perspective/accept', async (c) => {
     description: candidate.productDescription,
     googleProductCategory: candidate.productGoogleCategory,
     price: candidate.productPrice
-  }, candidate.perspectiveLabel);
+  }, candidate.perspectiveLabel, { includeProductName });
 
   await updateCandidate(c.env.DB, id, {
     perspectiveStatus: 'accepted',
@@ -191,7 +196,7 @@ app.post('/api/candidates/:id/perspective/accept', async (c) => {
 app.post('/api/candidates/:id/perspective/reject', async (c) => {
   await ensureSchema(c.env.DB);
   const id = c.req.param('id');
-  const { feedback } = await c.req.json();
+  const { feedback, includeProductName } = await c.req.json();
   if (!feedback || !feedback.trim()) {
     return c.json({ error: 'Descreva a perspectiva que prefere testar.' }, 400);
   }
@@ -204,7 +209,7 @@ app.post('/api/candidates/:id/perspective/reject', async (c) => {
     description: candidate.productDescription,
     googleProductCategory: candidate.productGoogleCategory,
     price: candidate.productPrice
-  }, feedback);
+  }, feedback, { includeProductName: includeProductName !== false });
 
   await updateCandidate(c.env.DB, id, {
     perspectiveStatus: 'rejected',

@@ -484,6 +484,7 @@ function perspectiveCard(c) {
     '</div>' +
     '<div class="detail">' +
       '<div class="perspective"><b>' + esc(c.perspectiveLabel) + '</b><div class="rationale">' + esc(c.perspectiveRationale) + '</div></div>' +
+      '<label class="checkbox-field"><input type="checkbox" class="f-include-product-name" checked> Usar nome do produto no título</label>' +
       '<div class="row"><button class="primary btn-accept">Aceitar esta perspectiva</button></div>' +
       '<label>Ou descreva a perspectiva que prefere testar:<textarea class="f-feedback" rows="2" placeholder="Ex: focar em custo-benefício para famílias"></textarea></label>' +
       '<div class="row"><button class="btn-reject-feedback">Usar minha perspectiva</button></div>' +
@@ -494,10 +495,15 @@ function perspectiveCard(c) {
 function wirePerspectiveCard(el) {
   toggleRow(el);
   const id = el.dataset.id;
+  const includeProductName = () => el.querySelector('.f-include-product-name').checked;
   const accept = el.querySelector('.btn-accept');
   accept.addEventListener('click', async () => {
     accept.disabled = true; accept.textContent = 'Gerando copy...';
-    try { await api('/api/candidates/' + id + '/perspective/accept', { method: 'POST' }); } catch (e) { alert(e.message); }
+    try {
+      await api('/api/candidates/' + id + '/perspective/accept', {
+        method: 'POST', body: JSON.stringify({ includeProductName: includeProductName() })
+      });
+    } catch (e) { alert(e.message); }
     await loadAll();
   });
   const rejectBtn = el.querySelector('.btn-reject-feedback');
@@ -505,7 +511,11 @@ function wirePerspectiveCard(el) {
     const feedback = el.querySelector('.f-feedback').value.trim();
     if (!feedback) { alert('Descreva a perspectiva que prefere.'); return; }
     rejectBtn.disabled = true; rejectBtn.textContent = 'Gerando copy...';
-    try { await api('/api/candidates/' + id + '/perspective/reject', { method: 'POST', body: JSON.stringify({ feedback }) }); } catch (e) { alert(e.message); }
+    try {
+      await api('/api/candidates/' + id + '/perspective/reject', {
+        method: 'POST', body: JSON.stringify({ feedback, includeProductName: includeProductName() })
+      });
+    } catch (e) { alert(e.message); }
     await loadAll();
   });
 }

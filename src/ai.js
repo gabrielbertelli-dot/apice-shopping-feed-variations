@@ -15,17 +15,27 @@ const TITLE_MAX = 150;
 const DESCRIPTION_MAX = 1000;
 const AI_PROXY_URL = 'https://ai-proxy.gogroupbr.com/v1/chat/completions';
 
-const FEED_RULES = `Você está escrevendo dados de CATÁLOGO para o feed do Google Merchant Center
+// includeProductName controls whether the title has to keep referencing what the base
+// product actually is (its name/type) alongside the perspective's attribute, or is free to
+// be written purely from the perspective/benefit — a human-chosen option per variation (see
+// the "Usar nome do produto no título" checkbox in the dashboard's perspective card), not an
+// AI decision. Off is for testing a framing that doesn't lean on the product name at all.
+function feedRules(includeProductName) {
+  const productNameRule = includeProductName
+    ? 'Inclua o tipo/nome do produto original (o que ele é) no título, além do atributo da perspectiva — essa é a opção padrão.'
+    : 'NÃO inclua o nome/tipo do produto original no título — escreva o título só a partir do atributo/benefício da perspectiva, de forma factual (sem deixar de ser fiel aos dados reais do produto, só sem repetir "o que ele é").';
+
+  return `Você está escrevendo dados de CATÁLOGO para o feed do Google Merchant Center
 (atributos title/description de um produto), NÃO um anúncio. Isso muda as regras: aqui é
 proibido usar chamada para ação, tom de anúncio ou linguagem promocional — o Google trata
 isso como violação de política de conteúdo do feed e pode reprovar o item.
 
 Regras obrigatórias para o TÍTULO:
-- Até ${TITLE_MAX} caracteres, mas as informações mais importantes (tipo de produto +
-  atributo que diferencia esta variação) precisam caber nos primeiros 60-70 caracteres,
-  porque é só isso que aparece na maioria dos posicionamentos.
-- Ordem: o que o produto é, depois o atributo-chave da perspectiva. NÃO inclua o nome da
-  marca/loja/empresa no título — o feed já carrega a marca em outro atributo.
+- Até ${TITLE_MAX} caracteres, mas as informações mais importantes precisam caber nos
+  primeiros 60-70 caracteres, porque é só isso que aparece na maioria dos posicionamentos.
+- NÃO inclua o nome da marca/loja/empresa no título — o feed já carrega a marca em outro
+  atributo.
+- ${productNameRule}
 - Proibido: chamada para ação ("compre já", "aproveite", "peça agora"), CAIXA ALTA,
   pontuação decorativa (!!!, ***), emojis, URLs, texto promocional ou de preço
   ("frete grátis", "% off", "menor preço", "promoção"), nome da marca/loja/empresa.
@@ -42,6 +52,7 @@ Regras obrigatórias para a DESCRIÇÃO:
 - Não repetir o título inteiro literalmente — pode citar os mesmos termos, mas precisa
   acrescentar informação.
 - Não inventar atributo que não esteja implícito nos dados do produto informados abaixo.`;
+}
 
 function extractJson(text) {
   try {
@@ -161,9 +172,11 @@ Responda APENAS com um array JSON, sem texto antes ou depois, no formato:
   }));
 }
 
-// Step 2: write title/description for one already-decided perspective (AI-suggested or human-replaced).
-export async function generateCopyForPerspective(env, product, perspectiveText) {
-  const prompt = `${FEED_RULES}
+// Step 2: write title/description for one already-decided perspective (AI-suggested or
+// human-replaced). includeProductName (default true) is the human's per-variation choice —
+// see feedRules().
+export async function generateCopyForPerspective(env, product, perspectiveText, { includeProductName = true } = {}) {
+  const prompt = `${feedRules(includeProductName)}
 
 Produto atual (dados vindos do Google Merchant Center):
 ${productSummary(product)}

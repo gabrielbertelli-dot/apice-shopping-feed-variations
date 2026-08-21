@@ -13,9 +13,15 @@ Fonte: [Especificação do atributo title — Merchant Center Help](https://supp
 - **Limite:** até 150 caracteres (o Google aceita até 150, mas normalmente só ~70
   caracteres aparecem na maioria dos posicionamentos) — os primeiros 60-70 caracteres
   precisam carregar a informação mais importante sozinhos.
-- **Estrutura recomendada:** `Marca + Tipo de produto + Atributos-chave que diferenciam
-  a variação` (ex: função, ingrediente/ativo principal, tipo de cabelo/público, volume/ml).
-  Nessa ordem — marca primeiro, depois o que o produto é, depois o que o diferencia.
+- **Estrutura recomendada:** `Tipo de produto + Atributos-chave que diferenciam a
+  variação` (ex: função, ingrediente/ativo principal, tipo de cabelo/público, volume/ml).
+  Marca não entra no título (o feed já a carrega em outro atributo).
+- **Nome do produto no título — opção por variação:** o padrão é incluir o tipo/nome do
+  produto original antes do atributo da perspectiva (regra acima). O card de perspectiva no
+  dashboard tem um checkbox "Usar nome do produto no título" — desmarcando, o título sai
+  só a partir do atributo/benefício da perspectiva, sem repetir o que o produto é. Útil pra
+  testar um enquadramento que não se apoia no nome do produto. Continua proibido inventar
+  atributo que não esteja implícito nos dados reais, com ou sem essa opção.
 - **Proibido (redação oficial do Google):**
   - **Sem CTA / sem linguagem promocional** — a política veda "gimmicky ways of drawing
     attention" (formas chamativas de chamar atenção) e "promotional text" em geral. Isso
