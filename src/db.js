@@ -98,6 +98,11 @@ export async function ensureSchema(DB) {
     approved_at TEXT
   )`, []);
 
+  // listCandidates/activeCandidateProductIds filter by brand and/or status on every
+  // dashboard load and every discovery run — variation_candidates only grows (rows are
+  // never purged), so this was a full table scan on an unboundedly growing table.
+  await DB.exec('CREATE INDEX IF NOT EXISTS idx_candidates_brand_status ON variation_candidates(brand, status)', []);
+
   await DB.exec(`CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -314,6 +319,19 @@ export async function listCandidates(DB, { status, brand } = {}) {
     params
   );
   return rows.map(rowToCandidate);
+}
+
+// Same filter shape as listCandidates, but just the count — /api/status used to call
+// listCandidates and read .length off it, fetching every column (including large TEXT
+// fields like descriptions/image URLs) of every matching row just to produce a number.
+export async function countCandidates(DB, { status, brand } = {}) {
+  const clauses = [];
+  const params = [];
+  if (status) { clauses.push('status = ?'); params.push(status); }
+  if (brand) { clauses.push('brand = ?'); params.push(brand); }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const rows = await queryRows(DB, `SELECT COUNT(*) FROM variation_candidates ${where}`, params);
+  return rows[0][0];
 }
 
 // Products with a non-rejected candidate already in flight — discover.js uses this to

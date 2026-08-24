@@ -51,7 +51,7 @@ function simplify(p) {
 // Fetches one page (max 250) of a Merchant Center account's product list.
 async function fetchProductsPage(env, merchantId, pageToken) {
   if (!merchantId) throw new Error('merchantId não informado.');
-  const token = await getGoogleAccessToken(env, SCOPES.CONTENT);
+  const token = await getGoogleAccessToken(env, SCOPES.BOTH);
   const url = new URL(`${CONTENT_BASE}/${merchantId}/products`);
   url.searchParams.set('maxResults', '250');
   if (pageToken) url.searchParams.set('pageToken', pageToken);
@@ -64,6 +64,11 @@ async function fetchProductsPage(env, merchantId, pageToken) {
   return { products: (data.resources || []).map(simplify), nextPageToken: data.nextPageToken || null };
 }
 
+// 40 pages × 250 = 10,000 products — well above "a few thousand SKUs" this path is meant
+// for. A brand that grows past this without anyone flipping on largeCatalog would otherwise
+// just run until it silently hits the Worker's memory/time limit instead of failing clearly.
+const MAX_LIST_ALL_PAGES = 40;
+
 // Fetches the whole active product list in one request. Fine for catalogs up to a few
 // thousand SKUs (this is the default path — see brands.largeCatalog in discover.js); for
 // anything much larger, use findProductByOfferId/findProductByTitleSearch below instead —
@@ -72,10 +77,18 @@ async function fetchProductsPage(env, merchantId, pageToken) {
 export async function listAllProducts(env, merchantId) {
   const products = [];
   let pageToken;
+  let pages = 0;
   do {
     const page = await fetchProductsPage(env, merchantId, pageToken);
     products.push(...page.products);
     pageToken = page.nextPageToken;
+    pages++;
+    if (pages >= MAX_LIST_ALL_PAGES && pageToken) {
+      throw new Error(
+        `Catálogo do Merchant Center "${merchantId}" passou de ${MAX_LIST_ALL_PAGES * 250} produtos sem terminar — ` +
+        'marque esta marca como "Catálogo muito grande" na aba Marcas em vez de listar tudo.'
+      );
+    }
   } while (pageToken);
   return products;
 }
@@ -84,7 +97,7 @@ export async function listAllProducts(env, merchantId) {
 // "online~pt~BR~offerId123" — NOT the bare offer id).
 export async function getProductById(env, merchantId, id) {
   if (!merchantId) throw new Error('merchantId não informado.');
-  const token = await getGoogleAccessToken(env, SCOPES.CONTENT);
+  const token = await getGoogleAccessToken(env, SCOPES.BOTH);
   const response = await fetch(`${CONTENT_BASE}/${merchantId}/products/${encodeURIComponent(id)}`, {
     headers: { Authorization: `Bearer ${token}` }
   });
@@ -102,7 +115,7 @@ export async function getProductById(env, merchantId, id) {
 // for that once a specific match is picked.
 async function searchProductView(env, merchantId, whereClause) {
   if (!merchantId) throw new Error('merchantId não informado.');
-  const token = await getGoogleAccessToken(env, SCOPES.CONTENT);
+  const token = await getGoogleAccessToken(env, SCOPES.BOTH);
   const response = await fetch(`${REPORTS_BASE}/accounts/${merchantId}/reports:search`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -181,8 +194,17 @@ export function matchProductByTitle(products, sellerTitle) {
 // candidates server-side, then matchProductByTitle's same word-overlap scoring picks the
 // best one, same as the in-memory path used to. This is what both runDiscovery's fuzzy
 // fallback and runDiscoveryForProduct's manual search use.
+// Cap on how many words feed the ANDed clause below — an unbounded word list from a manual
+// search box, or a Metabase "title" that's actually a full description by mistake, would
+// otherwise build an arbitrarily large MCQL query. Longest words first (not just the first
+// N) keeps the more distinctive tokens over short/common ones when trimming.
+const MAX_TITLE_SEARCH_WORDS = 10;
+
 export async function findProductByTitleSearch(env, merchantId, productName) {
-  const words = normalizeWords(productName);
+  const words = normalizeWords(productName)
+    .slice()
+    .sort((a, b) => b.length - a.length)
+    .slice(0, MAX_TITLE_SEARCH_WORDS);
   if (!words.length) return null;
   const clause = words.map((w) => `title REGEXP_MATCH '(?i).*${escapeMcql(w)}.*'`).join(' AND ');
   const rows = await searchProductView(env, merchantId, clause);

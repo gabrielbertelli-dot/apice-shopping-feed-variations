@@ -359,7 +359,10 @@ export async function backfillProductFields(env, { brandName } = {}) {
   }
 
   const syncResults = {};
-  for (const currentBrand of brandsToSync) {
+  // Different brands' syncs are independent (queueSheetSync only serializes within a brand),
+  // same reasoning as runDiscovery's per-brand Promise.all — no need to wait for brand A's
+  // sheet write before starting brand B's.
+  await Promise.all([...brandsToSync].map(async (currentBrand) => {
     try {
       const brand = brandCache.get(currentBrand);
       // Queued like approve()/reject() so a backfill run doesn't race a human approving
@@ -369,7 +372,7 @@ export async function backfillProductFields(env, { brandName } = {}) {
     } catch (err) {
       errors.push(`${currentBrand}: falha ao resincronizar planilha — ${String(err.message || err)}`);
     }
-  }
+  }));
 
   return { updated, errors, syncResults };
 }

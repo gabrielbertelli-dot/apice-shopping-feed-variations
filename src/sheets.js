@@ -40,7 +40,7 @@ function candidateToRow(c) {
 export async function syncApprovedFeed(env, sheetId, tabName, approvedCandidates) {
   if (!sheetId) throw new Error('sheetId não informado para esta marca.');
   const tab = tabName || 'feed';
-  const token = await getGoogleAccessToken(env, SCOPES.SHEETS);
+  const token = await getGoogleAccessToken(env, SCOPES.BOTH);
 
   const rows = [HEADER, ...approvedCandidates.map(candidateToRow)];
 

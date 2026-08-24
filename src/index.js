@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import {
-  ensureSchema, getSettings, setSetting, listCandidates, getCandidate,
+  ensureSchema, getSettings, setSetting, listCandidates, countCandidates, getCandidate,
   updateCandidate, listApprovedCandidates, listRuns,
   listBrands, upsertBrand, deleteBrand, getBrand, queryRows
 } from './db';
@@ -81,9 +81,9 @@ app.get('/api/status', async (c) => {
   await ensureSchema(DB);
   const settings = await getSettings(DB);
   const brands = await listBrands(DB);
-  const awaitingPerspective = await listCandidates(DB, { status: 'awaiting_perspective', brand: brandFilter });
-  const pending = await listCandidates(DB, { status: 'pending_review', brand: brandFilter });
-  const approved = await listCandidates(DB, { status: 'approved', brand: brandFilter });
+  const awaitingPerspectiveCount = await countCandidates(DB, { status: 'awaiting_perspective', brand: brandFilter });
+  const pendingCount = await countCandidates(DB, { status: 'pending_review', brand: brandFilter });
+  const approvedCount = await countCandidates(DB, { status: 'approved', brand: brandFilter });
   const runs = await listRuns(DB, 1);
   const topSellerRows = brandFilter
     ? await queryRows(DB, 'SELECT COUNT(*) FROM top_sellers WHERE brand = ?', [brandFilter])
@@ -101,9 +101,9 @@ app.get('/api/status', async (c) => {
     },
     settings,
     brandsCount: brands.length,
-    awaitingPerspectiveCount: awaitingPerspective.length,
-    pendingCount: pending.length,
-    approvedCount: approved.length,
+    awaitingPerspectiveCount,
+    pendingCount,
+    approvedCount,
     topSellersCount: topSellerRows[0][0],
     lastRun: runs[0] || null
   });

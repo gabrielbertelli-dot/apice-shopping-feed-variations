@@ -22,10 +22,25 @@ function base64UrlToBytes(str) {
   return bytes;
 }
 
-async function hmac(secret, text) {
+// verifySessionToken runs on essentially every request (the app.use('/', ...)/('/api/*', ...)
+// middleware in index.js) — re-importing the HMAC key via crypto.subtle every single time
+// was a per-request tax that scales with total request volume. Cached at module scope, same
+// idea as google.js's cachedToken; keyed by the secret value so it stays correct even in the
+// (currently theoretical, since env bindings are fixed at deploy time) case SESSION_SECRET
+// changes between requests on the same warm instance.
+let cachedHmacKey = null; // { secret, key }
+
+async function importHmacKey(secret) {
+  if (cachedHmacKey && cachedHmacKey.secret === secret) return cachedHmacKey.key;
   const key = await crypto.subtle.importKey(
     'raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
   );
+  cachedHmacKey = { secret, key };
+  return key;
+}
+
+async function hmac(secret, text) {
+  const key = await importHmacKey(secret);
   const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(text));
   return bytesToBase64Url(new Uint8Array(sig));
 }
