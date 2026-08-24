@@ -104,6 +104,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   </nav>
 
   <div class="tab-panel" id="tab-overview">
+    <div id="new-items-banner-slot"></div>
     <div class="cards" id="cards"></div>
 
     <div class="row" style="justify-content: space-between;">
@@ -156,12 +157,12 @@ export const DASHBOARD_HTML = `<!doctype html>
       <table class="brands" id="brands-table"></table>
       <div class="brand-row">
         <div class="brand-grid">
-          <label>Nome da marca<input type="text" id="brand-name" placeholder="Ex: Ápice"></label>
-          <label>Merchant Center ID<input type="text" id="brand-merchant-id" placeholder="1234567"></label>
-          <label>Google Sheet ID<input type="text" id="brand-sheet-id" placeholder="1AbC..."></label>
-          <label>Aba da planilha<input type="text" id="brand-tab" placeholder="feed" value="feed"></label>
+          <label>Nome da marca<div class="help">Precisa bater com o nome usado no Metabase (a comparação já ignora maiúsculas/minúsculas).</div><input type="text" id="brand-name" placeholder="Ex: Ápice"></label>
+          <label>Merchant Center ID<div class="help">O ID numérico da conta no Google Merchant Center — não é o nome da conta.</div><input type="text" id="brand-merchant-id" placeholder="1234567"></label>
+          <label>Google Sheet ID<div class="help">O trecho entre /d/ e /edit na URL da planilha do Google Sheets.</div><input type="text" id="brand-sheet-id" placeholder="1AbC..."></label>
+          <label>Aba da planilha<div class="help">Nome exato da aba (case-sensitive) onde o feed aprovado é escrito.</div><input type="text" id="brand-tab" placeholder="feed" value="feed"></label>
           <label class="checkbox-field"><input type="checkbox" id="brand-active" checked> Marca ativa (considerada nas descobertas)</label>
-          <label class="checkbox-field"><input type="checkbox" id="brand-large-catalog"> Catálogo muito grande (usa busca via Merchant API Reports em vez de listar tudo — exige registro prévio de developer na conta, ver docs)</label>
+          <label class="checkbox-field"><input type="checkbox" id="brand-large-catalog"> Catálogo muito grande (usa busca via Merchant API Reports em vez de listar tudo)<div class="help">Só marque se a marca tiver um catálogo na casa de milhões de SKUs (ex: Gocase) — exige registro prévio de developer na conta Merchant Center feito por um humano com acesso admin; fale com quem administra a conta antes de ativar.</div></label>
         </div>
         <div class="row">
           <button class="primary" id="add-brand">Adicionar / atualizar marca</button>
@@ -210,6 +211,37 @@ async function api(path, opts) {
 }
 
 function esc(s) { return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// Standardized replacement for the blocking window.alert() this file used to call on every
+// error/validation failure (~15 sites) — inserts a dismissible .warn line right after the
+// element the error relates to (usually the button that was clicked), instead of stopping
+// all interaction on the page until the user clicks OK. Idempotent per anchor: calling it
+// again on the same anchor replaces the previous message rather than stacking more of them.
+function showInlineWarn(anchorEl, message) {
+  if (!anchorEl) return;
+  const next = anchorEl.nextElementSibling;
+  if (next && next.classList && next.classList.contains('inline-warn')) next.remove();
+  const warn = document.createElement('div');
+  warn.className = 'warn inline-warn';
+  warn.textContent = message;
+  anchorEl.insertAdjacentElement('afterend', warn);
+}
+
+// Same idea, but for errors that surface after a candidate card has already been re-rendered
+// (e.g. the sheet-sync follow-up call that runs after approve()/reject() already refreshed
+// the card) — anchors on the card's own id instead of a button reference that no longer
+// exists in the DOM.
+function showCandidateWarn(id, message) {
+  const el = document.querySelector('.candidate-wrap[data-id="' + id + '"]');
+  const detail = el && el.querySelector('.detail');
+  if (!detail) return;
+  const existing = detail.querySelector('.inline-warn');
+  if (existing) existing.remove();
+  const warn = document.createElement('div');
+  warn.className = 'warn inline-warn';
+  warn.textContent = message;
+  detail.insertBefore(warn, detail.firstChild);
+}
 
 const CONFIG_LABELS = {
   METABASE: 'Metabase (URL + API key)',
@@ -273,12 +305,15 @@ document.getElementById('save-settings').addEventListener('click', async () => {
   btn.disabled = true; btn.textContent = 'Salvando...';
   try {
     const inputs = document.querySelectorAll('#settings-form input');
-    for (const input of inputs) {
-      await api('/api/settings', { method: 'POST', body: JSON.stringify({ key: input.dataset.key, value: input.value }) });
-    }
+    // Each field is an independent key/value POST with no dependency on the others, so
+    // there's no reason to wait for field 1 to round-trip before sending field 2 — this used
+    // to take (fields × request latency) sequentially for what's otherwise a single click.
+    await Promise.all(Array.from(inputs).map((input) =>
+      api('/api/settings', { method: 'POST', body: JSON.stringify({ key: input.dataset.key, value: input.value }) })
+    ));
     await loadStatus();
   } catch (e) {
-    alert('Erro ao salvar: ' + e.message);
+    showInlineWarn(btn, 'Erro ao salvar: ' + e.message);
   } finally {
     btn.disabled = false; btn.textContent = original;
   }
@@ -309,8 +344,8 @@ document.getElementById('run-product-now').addEventListener('click', async () =>
   const runBtn = document.getElementById('run-product-now');
   const brand = document.getElementById('discover-product-brand').value;
   const productName = document.getElementById('discover-product-name').value.trim();
-  if (!brand) { alert('Selecione a marca.'); return; }
-  if (!productName) { alert('Digite o nome do produto a buscar no Merchant Center.'); return; }
+  if (!brand) { resultEl.textContent = 'Selecione a marca.'; return; }
+  if (!productName) { resultEl.textContent = 'Digite o nome do produto a buscar no Merchant Center.'; return; }
   runBtn.disabled = true;
   resultEl.textContent = 'Buscando...';
   try {
@@ -389,7 +424,7 @@ async function loadBrands() {
       await api('/api/brands', { method: 'POST', body: JSON.stringify({ name: b.name, merchantId: b.merchantId, sheetId: b.sheetId, sheetTabName: b.sheetTabName, active: !b.active, largeCatalog: b.largeCatalog }) });
       await loadBrands();
     } catch (e) {
-      alert('Erro: ' + e.message);
+      showInlineWarn(btn, 'Erro: ' + e.message);
       btn.disabled = false; btn.textContent = original;
     }
   }));
@@ -403,7 +438,7 @@ async function loadBrands() {
       if (editingBrand === btn.dataset.name) resetBrandForm();
       await loadBrands();
     } catch (e) {
-      alert('Erro: ' + e.message);
+      showInlineWarn(btn, 'Erro: ' + e.message);
       btn.disabled = false; btn.textContent = original;
     }
   }));
@@ -441,7 +476,7 @@ document.getElementById('add-brand').addEventListener('click', async () => {
   const sheetTabName = document.getElementById('brand-tab').value.trim() || 'feed';
   const active = document.getElementById('brand-active').checked;
   const largeCatalog = document.getElementById('brand-large-catalog').checked;
-  if (!name || !merchantId || !sheetId) { alert('Preencha nome, Merchant ID e Sheet ID.'); return; }
+  if (!name || !merchantId || !sheetId) { showInlineWarn(btn, 'Preencha nome, Merchant ID e Sheet ID.'); return; }
   const original = btn.textContent;
   btn.disabled = true; btn.textContent = 'Salvando...';
   try {
@@ -449,7 +484,7 @@ document.getElementById('add-brand').addEventListener('click', async () => {
     resetBrandForm();
     await loadBrands();
   } catch (e) {
-    alert('Erro: ' + e.message);
+    showInlineWarn(btn, 'Erro: ' + e.message);
     btn.textContent = original;
   } finally {
     btn.disabled = false;
@@ -462,11 +497,20 @@ function fuzzyBadge(c) {
     : '';
 }
 
-function toggleRow(el) {
+// onExpand (optional) fires once, the first time this card is expanded — not on every
+// collapse/re-expand, and never for a card that's never opened at all. Used to defer
+// ensurePromptPrefilled's network call until it's actually needed instead of firing it
+// eagerly for every rendered card (see wireCandidateCard).
+function toggleRow(el, onExpand) {
   const row = el.querySelector('.row-item');
+  let expandedOnce = false;
   row.addEventListener('click', (e) => {
     if (e.target.closest('button, input, textarea, a, select, label')) return;
     el.classList.toggle('expanded');
+    if (onExpand && !expandedOnce && el.classList.contains('expanded')) {
+      expandedOnce = true;
+      onExpand();
+    }
   });
 }
 
@@ -517,7 +561,7 @@ function wirePerspectiveCard(el) {
     try {
       await api('/api/candidates/' + id + '/perspective/accept', { method: 'POST' });
     } catch (e) {
-      alert(e.message);
+      showInlineWarn(accept, e.message);
       accept.disabled = false; accept.textContent = 'Aceitar esta perspectiva';
       return;
     }
@@ -529,13 +573,13 @@ function wirePerspectiveCard(el) {
   const rejectBtn = el.querySelector('.btn-reject-feedback');
   rejectBtn.addEventListener('click', async () => {
     const feedback = el.querySelector('.f-feedback').value.trim();
-    if (!feedback) { alert('Descreva a perspectiva que prefere.'); return; }
+    if (!feedback) { showInlineWarn(rejectBtn, 'Descreva a perspectiva que prefere.'); return; }
     const includeName = includeProductName();
     rejectBtn.disabled = true; rejectBtn.textContent = 'Movendo...';
     try {
       await api('/api/candidates/' + id + '/perspective/reject', { method: 'POST', body: JSON.stringify({ feedback }) });
     } catch (e) {
-      alert(e.message);
+      showInlineWarn(rejectBtn, e.message);
       rejectBtn.disabled = false; rejectBtn.textContent = 'Usar minha perspectiva';
       return;
     }
@@ -635,11 +679,34 @@ function pollImageStatus(id) {
     attempts++;
     try {
       const result = await api('/api/candidates/' + id + '/check-image', { method: 'POST' });
-      if (result.imageStatus === 'processing' && attempts < 20) { setTimeout(poll, 6000); return; }
+      if (result.imageStatus === 'processing') {
+        if (attempts < 20) { setTimeout(poll, 6000); return; }
+        // Gave up after ~2 minutes — the job may just be running long (PiApp jobs are
+        // "well under 30-120s" per its own estimate, but not guaranteed). Used to go quiet
+        // here with the button stuck on "Gerando imagem…" and no way to resume short of a
+        // full page reload.
+        showStuckPollWarning(id);
+        return;
+      }
     } catch (e) { /* fall through — refreshOneCandidate shows whatever status actually persisted */ }
     await refreshOneCandidate(id);
   };
   setTimeout(poll, 6000);
+}
+
+function showStuckPollWarning(id) {
+  const el = document.querySelector('.candidate-wrap[data-id="' + id + '"]');
+  const btn = el && el.querySelector('.btn-gen-image');
+  if (!btn || el.querySelector('.stuck-poll-warn')) return;
+  const warn = document.createElement('div');
+  warn.className = 'warn stuck-poll-warn';
+  warn.innerHTML = 'Ainda gerando depois de ~2 minutos — pode levar mais tempo. ' +
+    '<button class="btn-recheck-image">Verificar novamente</button>';
+  btn.insertAdjacentElement('afterend', warn);
+  warn.querySelector('.btn-recheck-image').addEventListener('click', () => {
+    warn.remove();
+    pollImageStatus(id);
+  });
 }
 
 async function ensurePromptPrefilled(el, id) {
@@ -648,7 +715,34 @@ async function ensurePromptPrefilled(el, id) {
   try {
     const { prompt } = await api('/api/candidates/' + id + '/image-prompt');
     if (!textarea.value) { textarea.value = prompt; textarea.placeholder = ''; }
-  } catch (e) { textarea.placeholder = 'Não foi possível carregar sugestão — escreva o prompt manualmente.'; }
+  } catch (e) {
+    textarea.placeholder = 'Não foi possível carregar sugestão — escreva o prompt manualmente.';
+    showPromptRetryButton(el, id);
+  }
+}
+
+// Mirrors the retry affordance already used for copy-generation failures (.btn-retry-copy)
+// instead of leaving the operator stuck typing a prompt from scratch after a transient
+// network blip — same idea, just for the auto-suggested image prompt fetch.
+function showPromptRetryButton(el, id) {
+  const textarea = el.querySelector('.f-image-prompt');
+  if (!textarea || (textarea.nextElementSibling && textarea.nextElementSibling.classList.contains('btn-retry-prompt'))) return;
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'btn-retry-prompt';
+  retry.textContent = 'Tentar carregar sugestão de novo';
+  retry.addEventListener('click', async () => {
+    retry.disabled = true; retry.textContent = 'Carregando...';
+    try {
+      const { prompt } = await api('/api/candidates/' + id + '/image-prompt');
+      textarea.value = prompt;
+      textarea.placeholder = '';
+      retry.remove();
+    } catch (e) {
+      retry.disabled = false; retry.textContent = 'Tentar carregar sugestão de novo';
+    }
+  });
+  textarea.insertAdjacentElement('afterend', retry);
 }
 
 // approve()/reject() return right away without waiting on the sheet sync (see index.js) —
@@ -658,15 +752,15 @@ async function syncSheetIfNeeded(id, result, actionLabel) {
   if (!result || !result.needsSync) return;
   try {
     const syncResult = await api('/api/candidates/' + id + '/sync-sheet', { method: 'POST' });
-    if (syncResult.sheetError) alert(actionLabel + ', mas falhou ao sincronizar a planilha: ' + syncResult.sheetError);
+    if (syncResult.sheetError) showCandidateWarn(id, actionLabel + ', mas falhou ao sincronizar a planilha: ' + syncResult.sheetError);
   } catch (e) {
-    alert('Falha ao sincronizar a planilha: ' + e.message);
+    showCandidateWarn(id, 'Falha ao sincronizar a planilha: ' + e.message);
   }
 }
 
 function wireCandidateCard(el) {
-  toggleRow(el);
   const id = el.dataset.id;
+  toggleRow(el, () => ensurePromptPrefilled(el, id));
   const getFields = () => ({
     titleSuggestion: el.querySelector('.f-title').value,
     descriptionSuggestion: el.querySelector('.f-desc').value,
@@ -676,7 +770,11 @@ function wireCandidateCard(el) {
   if (save) save.addEventListener('click', async () => {
     save.disabled = true; const original = save.textContent; save.textContent = 'Salvando...';
     try { await api('/api/candidates/' + id, { method: 'PATCH', body: JSON.stringify(getFields()) }); }
-    catch (e) { alert('Erro: ' + e.message); }
+    catch (e) {
+      showInlineWarn(save, 'Erro: ' + e.message);
+      save.disabled = false; save.textContent = original;
+      return; // don't refresh — that would rebuild the card and wipe the warning above
+    }
     save.disabled = false; save.textContent = original;
     await refreshOneCandidate(id);
   });
@@ -688,7 +786,7 @@ function wireCandidateCard(el) {
       await api('/api/candidates/' + id, { method: 'PATCH', body: JSON.stringify(getFields()) });
       result = await api('/api/candidates/' + id + '/approve', { method: 'POST' });
     } catch (e) {
-      alert('Erro: ' + e.message);
+      showInlineWarn(approve, 'Erro: ' + e.message);
       approve.disabled = false; approve.textContent = original;
       return;
     }
@@ -711,7 +809,7 @@ function wireCandidateCard(el) {
     reject.disabled = true; const original = reject.textContent; reject.textContent = 'Rejeitando...';
     let result;
     try { result = await api('/api/candidates/' + id + '/reject', { method: 'POST' }); }
-    catch (e) { alert('Erro: ' + e.message); reject.disabled = false; reject.textContent = original; return; }
+    catch (e) { showInlineWarn(reject, 'Erro: ' + e.message); reject.disabled = false; reject.textContent = original; return; }
     await refreshOneCandidate(id);
     await loadStatus();
     await syncSheetIfNeeded(id, result, 'Candidato rejeitado');
@@ -729,7 +827,11 @@ function wireCandidateCard(el) {
   if (approveImage) approveImage.addEventListener('click', async () => {
     approveImage.disabled = true; const original = approveImage.textContent; approveImage.textContent = 'Aprovando...';
     try { await api('/api/candidates/' + id + '/image/approve', { method: 'POST' }); }
-    catch (e) { alert('Erro: ' + e.message); approveImage.disabled = false; approveImage.textContent = original; }
+    catch (e) {
+      showInlineWarn(approveImage, 'Erro: ' + e.message);
+      approveImage.disabled = false; approveImage.textContent = original;
+      return; // don't refresh — that would rebuild the card and wipe the warning above
+    }
     await refreshOneCandidate(id);
   });
 
@@ -743,7 +845,7 @@ function wireCandidateCard(el) {
       const qs = mode ? '?mode=' + encodeURIComponent(mode) : '';
       const { prompt } = await api('/api/candidates/' + id + '/image-prompt' + qs);
       textarea.value = prompt;
-    } catch (e) { alert('Erro: ' + e.message); }
+    } catch (e) { showInlineWarn(suggestPrompt, 'Erro: ' + e.message); }
     suggestPrompt.disabled = false; suggestPrompt.textContent = original;
   });
 
@@ -754,10 +856,12 @@ function wireCandidateCard(el) {
     try {
       await api('/api/candidates/' + id + '/generate-image', { method: 'POST', body: JSON.stringify({ prompt }) });
       pollImageStatus(id);
-    } catch (e) { alert(e.message); genImage.disabled = false; genImage.textContent = 'Gerar imagem via IA'; }
+    } catch (e) {
+      showInlineWarn(genImage, e.message);
+      genImage.disabled = false; genImage.textContent = 'Gerar imagem via IA';
+    }
   });
 
-  ensurePromptPrefilled(el, id);
   if (el.dataset.imageStatus === 'processing') pollImageStatus(id);
 }
 
@@ -804,11 +908,25 @@ function updateSectionCounts() {
 // captured el reference stopped being attached to the document. This only touches the
 // one card that actually changed; every other card (and any poll loop watching it) is left
 // alone.
+//
+// Also preserves the card's position within its section and its expanded/collapsed state:
+// this used to always re-insert at the end of the container and always render collapsed,
+// which broke the backend's product/variant sort order (any touched card jumped to the
+// bottom of the list) and collapsed the card right when an operator most wanted to see the
+// result of the action they just took (a save, an image approval, a copy retry).
 async function refreshOneCandidate(id) {
   let candidate = null;
   try { candidate = await api('/api/candidates/' + id); } catch (e) { candidate = null; }
 
-  document.querySelectorAll('.candidate-wrap[data-id="' + id + '"]').forEach((el) => el.remove());
+  let anchorNode = null;   // whatever used to sit right after the old card, to insertBefore
+  let anchorParent = null; // its container, in case the candidate is also changing section
+  let wasExpanded = false;
+  document.querySelectorAll('.candidate-wrap[data-id="' + id + '"]').forEach((el) => {
+    wasExpanded = wasExpanded || el.classList.contains('expanded');
+    anchorNode = el.nextElementSibling;
+    anchorParent = el.parentElement;
+    el.remove();
+  });
 
   if (candidate && candidate.status !== 'rejected' && (!brandFilter || candidate.brand === brandFilter)) {
     let containerId, html, wire;
@@ -821,9 +939,20 @@ async function refreshOneCandidate(id) {
     const container = document.getElementById(containerId);
     const empty = container.querySelector('.empty');
     if (empty) empty.remove();
-    container.insertAdjacentHTML('beforeend', html);
-    const newEl = container.querySelector('.candidate-wrap[data-id="' + id + '"]');
-    if (newEl) wire(newEl);
+
+    const temp = document.createElement('div');
+    temp.innerHTML = html;
+    const newEl = temp.firstElementChild;
+    // Only meaningful to preserve the old slot if the card is staying in the same
+    // section — if it moved (e.g. perspective accepted into pending), there's no old
+    // position in the NEW container to restore, so just append there.
+    if (anchorParent === container && anchorNode && container.contains(anchorNode)) {
+      container.insertBefore(newEl, anchorNode);
+    } else {
+      container.appendChild(newEl);
+    }
+    if (wasExpanded) newEl.classList.add('expanded');
+    wire(newEl);
   }
 
   updateSectionCounts();
@@ -847,6 +976,41 @@ async function loadAll() {
   await loadCandidates();
   await loadRuns();
 }
+
+// Background cron (/cron/discover) creates new perspectives independent of the dashboard's
+// own "Rodar descoberta agora" button — without this, an operator keeping the tab open
+// wouldn't see new items until a manual full-page reload. Deliberately lightweight: only
+// GET /api/status (a few COUNT(*) queries) every 60s, comparing against what's actually
+// rendered — never touches loadCandidates()/the DOM on its own, so it can't interrupt any
+// in-progress polling or edits the way a real reload would. The visible refresh only
+// happens if the operator clicks the banner.
+function showNewItemsBanner() {
+  const slot = document.getElementById('new-items-banner-slot');
+  if (!slot || slot.querySelector('.new-items-banner')) return;
+  const banner = document.createElement('div');
+  banner.className = 'warn new-items-banner';
+  banner.style.cursor = 'pointer';
+  banner.style.marginBottom = '12px';
+  banner.textContent = 'Novos itens disponíveis — clique para atualizar';
+  banner.addEventListener('click', async () => {
+    banner.remove();
+    await loadStatus();
+    await loadCandidates();
+  });
+  slot.appendChild(banner);
+}
+
+setInterval(async () => {
+  try {
+    const qs = brandFilter ? '?brand=' + encodeURIComponent(brandFilter) : '';
+    const status = await api('/api/status' + qs);
+    const currentPerspectives = document.querySelectorAll('#perspectives .candidate-wrap').length;
+    const currentPending = document.querySelectorAll('#pending .candidate-wrap').length;
+    if (status.awaitingPerspectiveCount > currentPerspectives || status.pendingCount > currentPending) {
+      showNewItemsBanner();
+    }
+  } catch (e) { /* silent — background convenience check, not a user-initiated action */ }
+}, 60000);
 
 loadAll();
 </script>
