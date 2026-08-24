@@ -6,7 +6,7 @@ import {
   listBrands, upsertBrand, deleteBrand, getBrand, queryRows
 } from './db';
 import { runDiscovery, runDiscoveryForProduct } from './discover';
-import { syncApprovedFeed } from './sheets';
+import { queueSheetSync } from './sheets';
 import { generateCopyForPerspective, suggestPainAndResult } from './ai';
 import { submitImageJob, checkJobs, buildImagePrompt, buildBeforeAfterImagePrompt } from './piapp';
 import { DASHBOARD_HTML } from './dashboard';
@@ -377,19 +377,38 @@ app.post('/api/candidates/:id/approve', async (c) => {
   try {
     const brand = await getBrand(c.env.DB, candidate.brand);
     if (!brand) throw new Error(`Marca "${candidate.brand}" não está mais cadastrada.`);
-    const approved = await listApprovedCandidates(c.env.DB, candidate.brand);
-    const result = await syncApprovedFeed(c.env, brand.sheetId, brand.sheetTabName, approved);
+    // Queued (not called directly) so two near-simultaneous approvals for this brand can't
+    // interleave their sheet writes and silently drop one of them — see sheets.js.
+    const result = await queueSheetSync(c.env, candidate.brand, brand.sheetId, brand.sheetTabName,
+      () => listApprovedCandidates(c.env.DB, candidate.brand));
     return c.json({ ok: true, sheet: result });
   } catch (err) {
     return c.json({ ok: true, sheetError: String(err.message || err) });
   }
 });
 
+// Rejecting a candidate that was already approved (live in the brand's sheet) removes it
+// from the feed right away — same queued resync as approve(), not just a status flip.
 app.post('/api/candidates/:id/reject', async (c) => {
   await ensureSchema(c.env.DB);
   const id = c.req.param('id');
+  const candidate = await getCandidate(c.env.DB, id);
+  if (!candidate) return c.json({ error: 'candidato não encontrado' }, 404);
+  const wasApproved = candidate.status === 'approved';
+
   await updateCandidate(c.env.DB, id, { status: 'rejected' });
-  return c.json({ ok: true });
+
+  if (!wasApproved) return c.json({ ok: true });
+
+  try {
+    const brand = await getBrand(c.env.DB, candidate.brand);
+    if (!brand) throw new Error(`Marca "${candidate.brand}" não está mais cadastrada.`);
+    const result = await queueSheetSync(c.env, candidate.brand, brand.sheetId, brand.sheetTabName,
+      () => listApprovedCandidates(c.env.DB, candidate.brand));
+    return c.json({ ok: true, sheet: result });
+  } catch (err) {
+    return c.json({ ok: true, sheetError: String(err.message || err) });
+  }
 });
 
 app.get('/api/runs', async (c) => {

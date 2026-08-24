@@ -71,3 +71,27 @@ export async function syncApprovedFeed(env, sheetId, tabName, approvedCandidates
 
   return { rowsWritten: rows.length - 1 };
 }
+
+// Serializes sheet syncs per brand — two concurrent approvals for the same brand used to
+// each independently read "all approved so far", clear the tab, and write back; if their
+// read/write windows interleaved, whichever write landed last could silently drop the
+// other's newly-approved candidate. Module-level Map surviving across requests on a warm
+// instance is the same idea as google.js's cachedToken / db.js's schemaEnsured.
+//
+// Callers pass a thunk (getApprovedCandidates), not a pre-fetched array — each queued sync
+// re-reads the latest approved set right before it actually runs, rather than trusting a
+// snapshot taken back when it was queued. That re-read is what actually closes the race;
+// serialization alone would just serialize stale writes in order.
+const brandSyncQueues = new Map(); // brand name -> Promise (tail of that brand's queue)
+
+export function queueSheetSync(env, brand, sheetId, tabName, getApprovedCandidates) {
+  const prev = brandSyncQueues.get(brand) || Promise.resolve();
+  const next = prev
+    .catch(() => {}) // a previous failed sync shouldn't poison the queue for the next one
+    .then(async () => {
+      const approved = await getApprovedCandidates();
+      return syncApprovedFeed(env, sheetId, tabName, approved);
+    });
+  brandSyncQueues.set(brand, next);
+  return next;
+}

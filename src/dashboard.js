@@ -584,7 +584,7 @@ function candidateCard(c) {
       '<label style="font-size:0.8rem;">ou cole uma URL manualmente:<input type="text" class="f-image" value="' + esc(c.imageUrl || '') + '"></label>' +
     '</div>';
 
-  return '<div class="candidate-wrap" data-id="' + c.id + '" data-image-status="' + esc(imgStatus) + '">' +
+  return '<div class="candidate-wrap" data-id="' + c.id + '" data-image-status="' + esc(imgStatus) + '" data-status="' + esc(c.status) + '">' +
     '<div class="row-item ' + rowClass + '">' + thumb +
       '<div class="row-main">' +
         '<div class="row-title">' + esc(c.brand) + ' · ' + esc(c.merchantProductId) + ' · variação ' + c.variantIndex + fuzzyBadge(c) + '</div>' +
@@ -607,11 +607,14 @@ function candidateCard(c) {
         : '<label>Título<input type="text" class="f-title" value="' + esc(c.titleSuggestion) + '"></label>' +
           '<label>Descrição<textarea class="f-desc" rows="3">' + esc(c.descriptionSuggestion) + '</textarea></label>' +
           imageSection +
+          (c.status === 'approved'
+            ? '<div class="warn">Editar aqui não atualiza a planilha automaticamente — clique em Aprovar de novo (ou salve e reaprove) pra propagar.</div>'
+            : '') +
           '<div class="row">' +
             (needsImageReview || generating
               ? '<span class="warn">Resolva a imagem acima antes de aprovar o candidato.</span>'
               : (c.status !== 'approved' ? '<button class="primary btn-approve">Aprovar</button>' : '')) +
-            (c.status !== 'rejected' ? '<button class="danger btn-reject">Rejeitar</button>' : '') +
+            (c.status !== 'rejected' ? '<button class="danger btn-reject">' + (c.status === 'approved' ? 'Remover da planilha' : 'Rejeitar') + '</button>' : '') +
             '<button class="btn-save">Salvar edição</button>' +
           '</div>') +
     '</div>' +
@@ -683,10 +686,19 @@ function wireCandidateCard(el) {
   });
   const reject = el.querySelector('.btn-reject');
   if (reject) reject.addEventListener('click', async () => {
-    if (!confirm('Rejeitar este candidato? Ele sai da fila de revisão (o produto pode voltar a ser proposto numa próxima descoberta).')) return;
+    // Rejecting a candidate that's already approved (live in the sheet) removes it from
+    // the feed right away — the backend resyncs immediately (see index.js), so the confirm
+    // text needs to say so, not the softer "sai da fila de revisão" wording used otherwise.
+    const wasApproved = el.dataset.status === 'approved';
+    const confirmMsg = wasApproved
+      ? 'Rejeitar este candidato JÁ APROVADO? Ele será removido da planilha da marca agora.'
+      : 'Rejeitar este candidato? Ele sai da fila de revisão (o produto pode voltar a ser proposto numa próxima descoberta).';
+    if (!confirm(confirmMsg)) return;
     reject.disabled = true; const original = reject.textContent; reject.textContent = 'Rejeitando...';
-    try { await api('/api/candidates/' + id + '/reject', { method: 'POST' }); }
-    catch (e) { alert('Erro: ' + e.message); reject.disabled = false; reject.textContent = original; }
+    try {
+      const result = await api('/api/candidates/' + id + '/reject', { method: 'POST' });
+      if (result.sheetError) alert('Candidato rejeitado, mas falhou ao sincronizar a planilha: ' + result.sheetError);
+    } catch (e) { alert('Erro: ' + e.message); reject.disabled = false; reject.textContent = original; }
     await refreshOneCandidate(id);
     await loadStatus();
   });
