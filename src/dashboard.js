@@ -496,29 +496,52 @@ function wirePerspectiveCard(el) {
   toggleRow(el);
   const id = el.dataset.id;
   const includeProductName = () => el.querySelector('.f-include-product-name').checked;
+
+  // Called after accept/reject have already moved the card to the review section
+  // (copyStatus 'generating') — does the actual AI call and refreshes the card again once
+  // it lands, whether it succeeds or fails. Kept separate so accepting/rejecting a
+  // perspective feels instant instead of blocking on the AI proxy (~7s) first.
+  const kickOffCopyGeneration = async (includeName) => {
+    try {
+      await api('/api/candidates/' + id + '/generate-copy', {
+        method: 'POST', body: JSON.stringify({ includeProductName: includeName })
+      });
+    } catch (e) { /* copyStatus/copyError already persisted server-side by generate-copy */ }
+    await refreshOneCandidate(id);
+  };
+
   const accept = el.querySelector('.btn-accept');
   accept.addEventListener('click', async () => {
-    accept.disabled = true; accept.textContent = 'Gerando copy...';
+    const includeName = includeProductName();
+    accept.disabled = true; accept.textContent = 'Movendo...';
     try {
-      await api('/api/candidates/' + id + '/perspective/accept', {
-        method: 'POST', body: JSON.stringify({ includeProductName: includeProductName() })
-      });
-    } catch (e) { alert(e.message); }
+      await api('/api/candidates/' + id + '/perspective/accept', { method: 'POST' });
+    } catch (e) {
+      alert(e.message);
+      accept.disabled = false; accept.textContent = 'Aceitar esta perspectiva';
+      return;
+    }
     await refreshOneCandidate(id);
     await loadStatus();
+    await kickOffCopyGeneration(includeName);
   });
+
   const rejectBtn = el.querySelector('.btn-reject-feedback');
   rejectBtn.addEventListener('click', async () => {
     const feedback = el.querySelector('.f-feedback').value.trim();
     if (!feedback) { alert('Descreva a perspectiva que prefere.'); return; }
-    rejectBtn.disabled = true; rejectBtn.textContent = 'Gerando copy...';
+    const includeName = includeProductName();
+    rejectBtn.disabled = true; rejectBtn.textContent = 'Movendo...';
     try {
-      await api('/api/candidates/' + id + '/perspective/reject', {
-        method: 'POST', body: JSON.stringify({ feedback, includeProductName: includeProductName() })
-      });
-    } catch (e) { alert(e.message); }
+      await api('/api/candidates/' + id + '/perspective/reject', { method: 'POST', body: JSON.stringify({ feedback }) });
+    } catch (e) {
+      alert(e.message);
+      rejectBtn.disabled = false; rejectBtn.textContent = 'Usar minha perspectiva';
+      return;
+    }
     await refreshOneCandidate(id);
     await loadStatus();
+    await kickOffCopyGeneration(includeName);
   });
 }
 
@@ -527,11 +550,15 @@ const IMAGE_STATUS_LABEL = { none: 'sem imagem', processing: 'gerando imagem', p
 
 function candidateCard(c) {
   const imgStatus = c.imageStatus || 'none';
+  const copyStatus = c.copyStatus || 'ready';
+  const copyGenerating = copyStatus === 'generating';
+  const copyFailed = copyStatus === 'failed';
   const previewImg = c.imageUrl || c.productImage;
   const generating = imgStatus === 'processing';
   const needsImageReview = imgStatus === 'preview';
-  const rowClass = c.status === 'approved' ? 'done' : (needsImageReview || imgStatus === 'failed' ? 'urgent' : 'review');
-  const thumb = previewImg ? '<img class="row-thumb" src="' + esc(previewImg) + '">' : '<span class="status-dot ' + (IMAGE_STATUS_DOT[imgStatus] || 'gray') + '"></span>';
+  const rowClass = c.status === 'approved' ? 'done' : (needsImageReview || imgStatus === 'failed' || copyFailed ? 'urgent' : 'review');
+  const dotClass = copyGenerating ? 'amber' : (copyFailed ? 'red' : (IMAGE_STATUS_DOT[imgStatus] || 'gray'));
+  const thumb = previewImg ? '<img class="row-thumb" src="' + esc(previewImg) + '">' : '<span class="status-dot ' + dotClass + '"></span>';
 
   let imageSection =
     '<div class="row" style="margin-top:0;">' +
@@ -561,22 +588,32 @@ function candidateCard(c) {
     '<div class="row-item ' + rowClass + '">' + thumb +
       '<div class="row-main">' +
         '<div class="row-title">' + esc(c.brand) + ' · ' + esc(c.merchantProductId) + ' · variação ' + c.variantIndex + fuzzyBadge(c) + '</div>' +
-        '<div class="row-sub">' + esc(c.titleSuggestion || c.resolvedPerspective) + ' · ' + (IMAGE_STATUS_LABEL[imgStatus] || imgStatus) + '</div>' +
+        '<div class="row-sub">' +
+          (copyGenerating ? 'Gerando copy…' : (copyFailed ? 'Falha ao gerar copy' :
+            esc(c.titleSuggestion || c.resolvedPerspective) + ' · ' + (IMAGE_STATUS_LABEL[imgStatus] || imgStatus))) +
+        '</div>' +
       '</div>' +
       '<span class="status">' + esc(c.status) + '</span>' +
       '<span class="chevron">▾</span>' +
     '</div>' +
     '<div class="detail">' +
-      '<label>Título<input type="text" class="f-title" value="' + esc(c.titleSuggestion) + '"></label>' +
-      '<label>Descrição<textarea class="f-desc" rows="3">' + esc(c.descriptionSuggestion) + '</textarea></label>' +
-      imageSection +
-      '<div class="row">' +
-        (needsImageReview || generating
-          ? '<span class="warn">Resolva a imagem acima antes de aprovar o candidato.</span>'
-          : (c.status !== 'approved' ? '<button class="primary btn-approve">Aprovar</button>' : '')) +
-        (c.status !== 'rejected' ? '<button class="danger btn-reject">Rejeitar</button>' : '') +
-        '<button class="btn-save">Salvar edição</button>' +
-      '</div>' +
+      (copyGenerating
+        ? '<div class="row" style="margin-top:0;"><span class="status-dot amber"></span> Gerando título e descrição via IA…</div>' +
+          '<div class="row"><button class="danger btn-reject">Rejeitar</button></div>'
+        : copyFailed
+        ? '<div class="warn">Falha ao gerar copy: ' + esc(c.copyError || '') + '</div>' +
+          '<div class="row"><button class="primary btn-retry-copy">Tentar gerar copy de novo</button>' +
+          '<button class="danger btn-reject">Rejeitar</button></div>'
+        : '<label>Título<input type="text" class="f-title" value="' + esc(c.titleSuggestion) + '"></label>' +
+          '<label>Descrição<textarea class="f-desc" rows="3">' + esc(c.descriptionSuggestion) + '</textarea></label>' +
+          imageSection +
+          '<div class="row">' +
+            (needsImageReview || generating
+              ? '<span class="warn">Resolva a imagem acima antes de aprovar o candidato.</span>'
+              : (c.status !== 'approved' ? '<button class="primary btn-approve">Aprovar</button>' : '')) +
+            (c.status !== 'rejected' ? '<button class="danger btn-reject">Rejeitar</button>' : '') +
+            '<button class="btn-save">Salvar edição</button>' +
+          '</div>') +
     '</div>' +
   '</div>';
 }
@@ -652,6 +689,14 @@ function wireCandidateCard(el) {
     catch (e) { alert('Erro: ' + e.message); reject.disabled = false; reject.textContent = original; }
     await refreshOneCandidate(id);
     await loadStatus();
+  });
+
+  const retryCopy = el.querySelector('.btn-retry-copy');
+  if (retryCopy) retryCopy.addEventListener('click', async () => {
+    retryCopy.disabled = true; retryCopy.textContent = 'Gerando...';
+    try { await api('/api/candidates/' + id + '/generate-copy', { method: 'POST', body: JSON.stringify({}) }); }
+    catch (e) { /* copyStatus/copyError already persisted server-side */ }
+    await refreshOneCandidate(id);
   });
 
   const approveImage = el.querySelector('.btn-approve-image');

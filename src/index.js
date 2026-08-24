@@ -171,64 +171,89 @@ app.patch('/api/candidates/:id', async (c) => {
   return c.json({ ok: true });
 });
 
-// Human accepts the AI-suggested perspective as-is -> generate copy for it right away.
-// includeProductName (default true): whether the title should still reference what the
-// base product is, or be written purely from the perspective — see the dashboard's
-// perspective-card checkbox.
+// Human accepts the AI-suggested perspective as-is. Just moves the candidate into the
+// review section with copyStatus='generating' — doesn't call the AI itself (that used to
+// block this request for ~7s). The dashboard calls /generate-copy right after this returns,
+// so the card shows "Gerando copy..." instead of the perspective screen sitting there
+// waiting on the AI proxy.
 app.post('/api/candidates/:id/perspective/accept', async (c) => {
   await ensureSchema(c.env.DB);
   const id = c.req.param('id');
   const candidate = await getCandidate(c.env.DB, id);
   if (!candidate) return c.json({ error: 'candidato não encontrado' }, 404);
-  const body = await c.req.json().catch(() => ({}));
-  const includeProductName = body.includeProductName !== false;
-
-  const copy = await generateCopyForPerspective(c.env, {
-    brand: candidate.brand,
-    title: candidate.productTitle,
-    description: candidate.productDescription,
-    googleProductCategory: candidate.productGoogleCategory,
-    price: candidate.productPrice
-  }, candidate.perspectiveLabel, { includeProductName });
 
   await updateCandidate(c.env.DB, id, {
     perspectiveStatus: 'accepted',
     resolvedPerspective: candidate.perspectiveLabel,
-    titleSuggestion: copy.title,
-    descriptionSuggestion: copy.description,
+    titleSuggestion: null,
+    descriptionSuggestion: null,
+    copyStatus: 'generating',
+    copyError: null,
     status: 'pending_review'
   });
   return c.json({ ok: true });
 });
 
 // Human rejects the AI-suggested perspective and describes what they want tested instead.
+// Same split as accept above — moves the candidate over immediately, /generate-copy does
+// the actual AI call afterward.
 app.post('/api/candidates/:id/perspective/reject', async (c) => {
   await ensureSchema(c.env.DB);
   const id = c.req.param('id');
-  const { feedback, includeProductName } = await c.req.json();
+  const { feedback } = await c.req.json();
   if (!feedback || !feedback.trim()) {
     return c.json({ error: 'Descreva a perspectiva que prefere testar.' }, 400);
   }
   const candidate = await getCandidate(c.env.DB, id);
   if (!candidate) return c.json({ error: 'candidato não encontrado' }, 404);
 
-  const copy = await generateCopyForPerspective(c.env, {
-    brand: candidate.brand,
-    title: candidate.productTitle,
-    description: candidate.productDescription,
-    googleProductCategory: candidate.productGoogleCategory,
-    price: candidate.productPrice
-  }, feedback, { includeProductName: includeProductName !== false });
-
   await updateCandidate(c.env.DB, id, {
     perspectiveStatus: 'rejected',
     perspectiveFeedback: feedback,
     resolvedPerspective: feedback,
-    titleSuggestion: copy.title,
-    descriptionSuggestion: copy.description,
+    titleSuggestion: null,
+    descriptionSuggestion: null,
+    copyStatus: 'generating',
+    copyError: null,
     status: 'pending_review'
   });
   return c.json({ ok: true });
+});
+
+// Does the actual (slow, ~5-8s) AI call for whatever perspective is already resolved on
+// this candidate (resolvedPerspective — set by accept/reject above, or by a previous call
+// here on retry). Split out from perspective/accept|reject so accepting/rejecting a
+// perspective feels instant; the dashboard calls this right after, and again from the
+// "Tentar gerar copy de novo" button if it fails.
+app.post('/api/candidates/:id/generate-copy', async (c) => {
+  await ensureSchema(c.env.DB);
+  const id = c.req.param('id');
+  const candidate = await getCandidate(c.env.DB, id);
+  if (!candidate) return c.json({ error: 'candidato não encontrado' }, 404);
+  const body = await c.req.json().catch(() => ({}));
+  const includeProductName = body.includeProductName !== false;
+  const perspectiveText = candidate.resolvedPerspective || candidate.perspectiveLabel;
+
+  try {
+    const copy = await generateCopyForPerspective(c.env, {
+      brand: candidate.brand,
+      title: candidate.productTitle,
+      description: candidate.productDescription,
+      googleProductCategory: candidate.productGoogleCategory,
+      price: candidate.productPrice
+    }, perspectiveText, { includeProductName });
+
+    await updateCandidate(c.env.DB, id, {
+      titleSuggestion: copy.title,
+      descriptionSuggestion: copy.description,
+      copyStatus: 'ready',
+      copyError: null
+    });
+    return c.json({ ok: true });
+  } catch (err) {
+    await updateCandidate(c.env.DB, id, { copyStatus: 'failed', copyError: String(err.message || err) });
+    return c.json({ error: String(err.message || err) }, 500);
+  }
 });
 
 // Suggested starting prompt for the editable prompt box in the dashboard — the human can

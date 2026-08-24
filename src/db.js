@@ -86,6 +86,8 @@ export async function ensureSchema(DB) {
     resolved_perspective TEXT,
     title_suggestion TEXT,
     description_suggestion TEXT,
+    copy_status TEXT NOT NULL DEFAULT 'ready',
+    copy_error TEXT,
     image_url TEXT,
     image_prompt TEXT,
     image_job_id TEXT,
@@ -123,6 +125,11 @@ export async function ensureSchema(DB) {
   await ensureColumn(DB, 'variation_candidates', 'image_status', "TEXT NOT NULL DEFAULT 'none'");
   await ensureColumn(DB, 'variation_candidates', 'image_error', 'TEXT');
   await ensureColumn(DB, 'variation_candidates', 'match_method', 'TEXT');
+  // 'ready' as the retrofit default is correct for rows that predate this column: they
+  // already went through the old synchronous accept-and-generate flow, so their
+  // title/description are already filled in — same meaning as 'ready' has going forward.
+  await ensureColumn(DB, 'variation_candidates', 'copy_status', "TEXT NOT NULL DEFAULT 'ready'");
+  await ensureColumn(DB, 'variation_candidates', 'copy_error', 'TEXT');
   // Original-product pass-through fields for the auxiliary feed (src/sheets.js) — never
   // AI-generated, always copied verbatim from the Merchant Center product (see merchant.js).
   await ensureColumn(DB, 'variation_candidates', 'product_sale_price', 'TEXT');
@@ -266,7 +273,8 @@ const CANDIDATE_COLUMNS = `id, merchant_product_id, brand, product_title, produc
   product_price, product_currency, product_sale_price, product_short_title, product_type, product_additional_image_links,
   product_gtin, product_google_category, variant_index, perspective_label,
   perspective_rationale, match_method, perspective_status, perspective_feedback, resolved_perspective, title_suggestion,
-  description_suggestion, image_url, image_prompt, image_job_id, image_status, image_error, status, created_at, approved_at`;
+  description_suggestion, copy_status, copy_error, image_url, image_prompt, image_job_id, image_status, image_error,
+  status, created_at, approved_at`;
 
 function rowToCandidate(row) {
   const [
@@ -274,7 +282,8 @@ function rowToCandidate(row) {
     product_currency, product_sale_price, product_short_title, product_type, product_additional_image_links,
     product_gtin, product_google_category, variant_index, perspective_label, perspective_rationale,
     match_method, perspective_status, perspective_feedback, resolved_perspective, title_suggestion,
-    description_suggestion, image_url, image_prompt, image_job_id, image_status, image_error, status, created_at, approved_at
+    description_suggestion, copy_status, copy_error, image_url, image_prompt, image_job_id, image_status, image_error,
+    status, created_at, approved_at
   ] = row;
   return {
     id, merchantProductId: merchant_product_id, brand, productTitle: product_title,
@@ -286,7 +295,8 @@ function rowToCandidate(row) {
     perspectiveLabel: perspective_label, perspectiveRationale: perspective_rationale, matchMethod: match_method,
     perspectiveStatus: perspective_status, perspectiveFeedback: perspective_feedback,
     resolvedPerspective: resolved_perspective, titleSuggestion: title_suggestion,
-    descriptionSuggestion: description_suggestion, imageUrl: image_url, imagePrompt: image_prompt,
+    descriptionSuggestion: description_suggestion, copyStatus: copy_status, copyError: copy_error,
+    imageUrl: image_url, imagePrompt: image_prompt,
     imageJobId: image_job_id, imageStatus: image_status, imageError: image_error, status, createdAt: created_at,
     approvedAt: approved_at
   };
@@ -325,6 +335,8 @@ export async function getCandidate(DB, id) {
 const CANDIDATE_COLUMN_MAP = {
   titleSuggestion: 'title_suggestion',
   descriptionSuggestion: 'description_suggestion',
+  copyStatus: 'copy_status',
+  copyError: 'copy_error',
   imageUrl: 'image_url',
   imagePrompt: 'image_prompt',
   imageJobId: 'image_job_id',
