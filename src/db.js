@@ -21,7 +21,18 @@ async function ensureColumn(DB, table, columnName, columnDef) {
   }
 }
 
+// ensureSchema() used to run its full CREATE TABLE + ~15 ALTER TABLE (each one deliberately
+// expected to fail with "duplicate column" once the schema is up to date) on EVERY single
+// API request — every route handler calls it first. That's ~21 round trips to env.DB before
+// a request does any actual work, and was the biggest contributor to the app feeling slow
+// (confirmed: simple GETs like /api/status/​/api/brands were taking ~4s each). The schema
+// doesn't change within a warm Worker instance's lifetime, so only run this once per
+// instance — module-level state persists across requests here the same way google.js's
+// cachedToken already relies on it.
+let schemaEnsured = false;
+
 export async function ensureSchema(DB) {
+  if (schemaEnsured) return;
   await DB.exec(`CREATE TABLE IF NOT EXISTS brands (
     name TEXT PRIMARY KEY,
     merchant_id TEXT NOT NULL,
@@ -127,6 +138,7 @@ export async function ensureSchema(DB) {
   // developer registration that only a human Admin account can do (see merchant.js), so it
   // stays opt-in per brand rather than becoming a hard dependency for everyone.
   await ensureColumn(DB, 'brands', 'large_catalog', 'INTEGER NOT NULL DEFAULT 0');
+  schemaEnsured = true;
 }
 
 const DEFAULT_SETTINGS = {

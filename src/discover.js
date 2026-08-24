@@ -76,82 +76,106 @@ export async function runDiscovery(env, { brandName } = {}) {
     }
 
     const variantsPerProduct = parseInt(settings.variants_per_product, 10) || 3;
+
+    // Brands are independent of each other (different Merchant Center accounts, different
+    // catalogs) — processed concurrently instead of one after another. Sequentially, each
+    // non-largeCatalog brand pays for a full listAllProducts() catalog fetch (several
+    // paginated Content API calls), and with ~10 brands registered that summed to 130-180s
+    // wall-clock for the weekly cron, once even failing outright ("Durable Object instance
+    // is no longer active" — the request just ran too long). Running them concurrently turns
+    // that sum into roughly the slowest single brand's fetch time instead.
+    const brandResults = await Promise.all(
+      [...sellersByBrand.entries()].map(async ([currentBrand, sellers]) => {
+        const brand = brandByKey.get(normalizeBrandKey(currentBrand));
+        const activeProductIds = await activeCandidateProductIds(DB, currentBrand);
+
+        // Small/medium catalogs (the default — no setup required): list once per brand,
+        // match in memory. Large catalogs (brand.largeCatalog, e.g. Gocase's ~5M SKUs) can't
+        // be listed at all without risking the Worker's memory/execution-time limits, so
+        // each seller is resolved individually via the Merchant API Reports search instead —
+        // but that path needs a one-time per-account developer registration (see
+        // merchant.js), so it stays opt-in per brand rather than a hard dependency for
+        // everyone.
+        let catalog = null;
+        let byOfferId = null;
+        if (!brand.largeCatalog) {
+          catalog = await listAllProducts(env, brand.merchantId);
+          byOfferId = new Map(catalog.map((p) => [String(p.offerId), p]));
+        }
+
+        let candidatesCreated = 0;
+        let alreadyTracked = 0;
+        let fuzzyMatched = 0;
+        const skippedProducts = [];
+
+        for (const seller of sellers) {
+          if (activeProductIds.has(String(seller.merchantProductId))) {
+            alreadyTracked++;
+            continue;
+          }
+          let product;
+          let matchMethod;
+          if (brand.largeCatalog) {
+            product = await findProductByOfferId(env, brand.merchantId, seller.merchantProductId);
+            matchMethod = product ? 'id' : null;
+            if (!product) {
+              const fuzzy = await findProductByTitleSearch(env, brand.merchantId, seller.title || '');
+              if (fuzzy) { product = fuzzy.product; matchMethod = 'title'; fuzzyMatched++; }
+            }
+          } else {
+            product = byOfferId.get(String(seller.merchantProductId));
+            matchMethod = product ? 'id' : null;
+            if (!product) {
+              // Sales-data ID doesn't exist in the Merchant Center catalog at all (e.g. Yampi
+              // vs Shopify-fed catalogs have unrelated ID spaces) — fall back to matching by
+              // product name before giving up on this seller entirely.
+              const fuzzy = matchProductByTitle(catalog, seller.title || '');
+              if (fuzzy) { product = fuzzy.product; matchMethod = 'title'; fuzzyMatched++; }
+            }
+          }
+          if (!product) {
+            skippedProducts.push(`${currentBrand}:${seller.merchantProductId}`);
+            continue;
+          }
+          const perspectives = await suggestPerspectives(env, product, variantsPerProduct);
+          for (let i = 0; i < perspectives.length; i++) {
+            const p = perspectives[i];
+            await insertCandidate(DB, {
+              merchantProductId: seller.merchantProductId,
+              brand: currentBrand,
+              productTitle: product.title,
+              productDescription: product.description,
+              productLink: product.link,
+              productImage: product.imageLink,
+              productPrice: product.price,
+              productCurrency: product.priceCurrency,
+              ...passthroughFields(product),
+              productGtin: product.gtin,
+              productGoogleCategory: product.googleProductCategory,
+              variantIndex: i + 1,
+              perspectiveLabel: p.label,
+              perspectiveRationale: p.rationale,
+              matchMethod,
+              status: 'awaiting_perspective',
+              createdAt: new Date().toISOString()
+            });
+            candidatesCreated++;
+          }
+        }
+
+        return { candidatesCreated, alreadyTracked, fuzzyMatched, skippedProducts };
+      })
+    );
+
     let candidatesCreated = 0;
     let alreadyTracked = 0;
     let fuzzyMatched = 0;
     const skippedProducts = [];
-
-    for (const [currentBrand, sellers] of sellersByBrand.entries()) {
-      const brand = brandByKey.get(normalizeBrandKey(currentBrand));
-      const activeProductIds = await activeCandidateProductIds(DB, currentBrand);
-
-      // Small/medium catalogs (the default — no setup required): list once per brand, match
-      // in memory. Large catalogs (brand.largeCatalog, e.g. Gocase's ~5M SKUs) can't be
-      // listed at all without risking the Worker's memory/execution-time limits, so each
-      // seller is resolved individually via the Merchant API Reports search instead — but
-      // that path needs a one-time per-account developer registration (see merchant.js),
-      // so it stays opt-in per brand rather than a hard dependency for everyone.
-      let catalog = null;
-      let byOfferId = null;
-      if (!brand.largeCatalog) {
-        catalog = await listAllProducts(env, brand.merchantId);
-        byOfferId = new Map(catalog.map((p) => [String(p.offerId), p]));
-      }
-
-      for (const seller of sellers) {
-        if (activeProductIds.has(String(seller.merchantProductId))) {
-          alreadyTracked++;
-          continue;
-        }
-        let product;
-        let matchMethod;
-        if (brand.largeCatalog) {
-          product = await findProductByOfferId(env, brand.merchantId, seller.merchantProductId);
-          matchMethod = product ? 'id' : null;
-          if (!product) {
-            const fuzzy = await findProductByTitleSearch(env, brand.merchantId, seller.title || '');
-            if (fuzzy) { product = fuzzy.product; matchMethod = 'title'; fuzzyMatched++; }
-          }
-        } else {
-          product = byOfferId.get(String(seller.merchantProductId));
-          matchMethod = product ? 'id' : null;
-          if (!product) {
-            // Sales-data ID doesn't exist in the Merchant Center catalog at all (e.g. Yampi
-            // vs Shopify-fed catalogs have unrelated ID spaces) — fall back to matching by
-            // product name before giving up on this seller entirely.
-            const fuzzy = matchProductByTitle(catalog, seller.title || '');
-            if (fuzzy) { product = fuzzy.product; matchMethod = 'title'; fuzzyMatched++; }
-          }
-        }
-        if (!product) {
-          skippedProducts.push(`${currentBrand}:${seller.merchantProductId}`);
-          continue;
-        }
-        const perspectives = await suggestPerspectives(env, product, variantsPerProduct);
-        for (let i = 0; i < perspectives.length; i++) {
-          const p = perspectives[i];
-          await insertCandidate(DB, {
-            merchantProductId: seller.merchantProductId,
-            brand: currentBrand,
-            productTitle: product.title,
-            productDescription: product.description,
-            productLink: product.link,
-            productImage: product.imageLink,
-            productPrice: product.price,
-            productCurrency: product.priceCurrency,
-            ...passthroughFields(product),
-            productGtin: product.gtin,
-            productGoogleCategory: product.googleProductCategory,
-            variantIndex: i + 1,
-            perspectiveLabel: p.label,
-            perspectiveRationale: p.rationale,
-            matchMethod,
-            status: 'awaiting_perspective',
-            createdAt: new Date().toISOString()
-          });
-          candidatesCreated++;
-        }
-      }
+    for (const r of brandResults) {
+      candidatesCreated += r.candidatesCreated;
+      alreadyTracked += r.alreadyTracked;
+      fuzzyMatched += r.fuzzyMatched;
+      skippedProducts.push(...r.skippedProducts);
     }
 
     const details = { skippedBrands: [...skippedBrands], skippedProducts, alreadyTracked, fuzzyMatched };
