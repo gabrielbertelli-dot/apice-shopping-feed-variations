@@ -504,7 +504,8 @@ function wirePerspectiveCard(el) {
         method: 'POST', body: JSON.stringify({ includeProductName: includeProductName() })
       });
     } catch (e) { alert(e.message); }
-    await loadAll();
+    await refreshOneCandidate(id);
+    await loadStatus();
   });
   const rejectBtn = el.querySelector('.btn-reject-feedback');
   rejectBtn.addEventListener('click', async () => {
@@ -516,7 +517,8 @@ function wirePerspectiveCard(el) {
         method: 'POST', body: JSON.stringify({ feedback, includeProductName: includeProductName() })
       });
     } catch (e) { alert(e.message); }
-    await loadAll();
+    await refreshOneCandidate(id);
+    await loadStatus();
   });
 }
 
@@ -579,16 +581,23 @@ function candidateCard(c) {
   '</div>';
 }
 
-function pollImageStatus(el, id) {
+// Looks up the card by candidate id fresh on every tick instead of holding on to the el
+// passed in when polling started — that element only represents "this card as it existed
+// at that moment." Any DOM rebuild in between (this card's own refreshOneCandidate(), or
+// anyone else's) replaces the node; checking document.body.contains(el) against the OLD
+// node made polling stop silently the instant literally anything else on the page
+// re-rendered, which is what was killing in-progress image generation (~100s) for other
+// SKUs the moment you touched any other candidate.
+function pollImageStatus(id) {
   let attempts = 0;
   const poll = async () => {
-    if (!document.body.contains(el)) return;
+    if (!document.querySelector('.candidate-wrap[data-id="' + id + '"]')) return;
     attempts++;
     try {
       const result = await api('/api/candidates/' + id + '/check-image', { method: 'POST' });
       if (result.imageStatus === 'processing' && attempts < 20) { setTimeout(poll, 6000); return; }
-    } catch (e) { /* fall through to reload below — the card will show whatever status actually persisted */ }
-    await loadAll();
+    } catch (e) { /* fall through — refreshOneCandidate shows whatever status actually persisted */ }
+    await refreshOneCandidate(id);
   };
   setTimeout(poll, 6000);
 }
@@ -616,7 +625,7 @@ function wireCandidateCard(el) {
     try { await api('/api/candidates/' + id, { method: 'PATCH', body: JSON.stringify(getFields()) }); }
     catch (e) { alert('Erro: ' + e.message); }
     save.disabled = false; save.textContent = original;
-    await loadAll();
+    await refreshOneCandidate(id);
   });
   const approve = el.querySelector('.btn-approve');
   if (approve) approve.addEventListener('click', async () => {
@@ -632,7 +641,8 @@ function wireCandidateCard(el) {
       alert('Erro: ' + e.message);
       approve.disabled = false; approve.textContent = original;
     }
-    await loadAll();
+    await refreshOneCandidate(id);
+    await loadStatus();
   });
   const reject = el.querySelector('.btn-reject');
   if (reject) reject.addEventListener('click', async () => {
@@ -640,7 +650,8 @@ function wireCandidateCard(el) {
     reject.disabled = true; const original = reject.textContent; reject.textContent = 'Rejeitando...';
     try { await api('/api/candidates/' + id + '/reject', { method: 'POST' }); }
     catch (e) { alert('Erro: ' + e.message); reject.disabled = false; reject.textContent = original; }
-    await loadAll();
+    await refreshOneCandidate(id);
+    await loadStatus();
   });
 
   const approveImage = el.querySelector('.btn-approve-image');
@@ -648,7 +659,7 @@ function wireCandidateCard(el) {
     approveImage.disabled = true; const original = approveImage.textContent; approveImage.textContent = 'Aprovando...';
     try { await api('/api/candidates/' + id + '/image/approve', { method: 'POST' }); }
     catch (e) { alert('Erro: ' + e.message); approveImage.disabled = false; approveImage.textContent = original; }
-    await loadAll();
+    await refreshOneCandidate(id);
   });
 
   const suggestPrompt = el.querySelector('.btn-suggest-prompt');
@@ -671,12 +682,12 @@ function wireCandidateCard(el) {
     genImage.disabled = true; genImage.textContent = 'Gerando imagem…';
     try {
       await api('/api/candidates/' + id + '/generate-image', { method: 'POST', body: JSON.stringify({ prompt }) });
-      pollImageStatus(el, id);
+      pollImageStatus(id);
     } catch (e) { alert(e.message); genImage.disabled = false; genImage.textContent = 'Gerar imagem via IA'; }
   });
 
   ensurePromptPrefilled(el, id);
-  if (el.dataset.imageStatus === 'processing') pollImageStatus(el, id);
+  if (el.dataset.imageStatus === 'processing') pollImageStatus(id);
 }
 
 async function loadCandidates() {
@@ -695,6 +706,56 @@ async function loadCandidates() {
 
   document.querySelectorAll('#perspectives .candidate-wrap').forEach(wirePerspectiveCard);
   document.querySelectorAll('#pending .candidate-wrap, #approved .candidate-wrap').forEach(wireCandidateCard);
+}
+
+const SECTIONS = [
+  ['perspectives', 'count-perspectives', 'Nenhuma perspectiva pendente.'],
+  ['pending', 'count-pending', 'Nenhum candidato pendente.'],
+  ['approved', 'count-approved', 'Nenhum candidato aprovado ainda.']
+];
+
+function updateSectionCounts() {
+  SECTIONS.forEach(([containerId, countId, emptyText]) => {
+    const container = document.getElementById(containerId);
+    const count = container.querySelectorAll('.candidate-wrap').length;
+    document.getElementById(countId).textContent = count ? '(' + count + ')' : '';
+    if (!count && !container.querySelector('.empty')) {
+      container.innerHTML = '<div class="empty">' + emptyText + '</div>';
+    }
+  });
+}
+
+// Refreshes exactly one candidate's card instead of tearing down and rebuilding every
+// section (loadAll()/loadCandidates() replace the whole DOM via innerHTML). That full
+// rebuild used to run after every single action on any candidate — including things as
+// quick as a PATCH save — and it silently killed pollImageStatus()'s in-flight polling for
+// every OTHER candidate whose image was still generating (a ~100s process), since their
+// captured el reference stopped being attached to the document. This only touches the
+// one card that actually changed; every other card (and any poll loop watching it) is left
+// alone.
+async function refreshOneCandidate(id) {
+  let candidate = null;
+  try { candidate = await api('/api/candidates/' + id); } catch (e) { candidate = null; }
+
+  document.querySelectorAll('.candidate-wrap[data-id="' + id + '"]').forEach((el) => el.remove());
+
+  if (candidate && candidate.status !== 'rejected' && (!brandFilter || candidate.brand === brandFilter)) {
+    let containerId, html, wire;
+    if (candidate.status === 'awaiting_perspective') {
+      containerId = 'perspectives'; html = perspectiveCard(candidate); wire = wirePerspectiveCard;
+    } else {
+      containerId = candidate.status === 'approved' ? 'approved' : 'pending';
+      html = candidateCard(candidate); wire = wireCandidateCard;
+    }
+    const container = document.getElementById(containerId);
+    const empty = container.querySelector('.empty');
+    if (empty) empty.remove();
+    container.insertAdjacentHTML('beforeend', html);
+    const newEl = container.querySelector('.candidate-wrap[data-id="' + id + '"]');
+    if (newEl) wire(newEl);
+  }
+
+  updateSectionCounts();
 }
 
 async function loadRuns() {

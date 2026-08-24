@@ -154,6 +154,15 @@ app.get('/api/candidates', async (c) => {
   return c.json(await listCandidates(c.env.DB, { status, brand }));
 });
 
+// Single-candidate fetch — lets the dashboard refresh just the one card an action touched
+// instead of reloading every status bucket (see dashboard.js's refreshOneCandidate).
+app.get('/api/candidates/:id', async (c) => {
+  await ensureSchema(c.env.DB);
+  const candidate = await getCandidate(c.env.DB, c.req.param('id'));
+  if (!candidate) return c.json({ error: 'candidato não encontrado' }, 404);
+  return c.json(candidate);
+});
+
 app.patch('/api/candidates/:id', async (c) => {
   await ensureSchema(c.env.DB);
   const id = c.req.param('id');
