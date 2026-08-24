@@ -651,6 +651,19 @@ async function ensurePromptPrefilled(el, id) {
   } catch (e) { textarea.placeholder = 'Não foi possível carregar sugestão — escreva o prompt manualmente.'; }
 }
 
+// approve()/reject() return right away without waiting on the sheet sync (see index.js) —
+// this fires the actual sync as a separate follow-up call when the response says one is
+// needed, surfacing sheetError the same way the old inline check used to.
+async function syncSheetIfNeeded(id, result, actionLabel) {
+  if (!result || !result.needsSync) return;
+  try {
+    const syncResult = await api('/api/candidates/' + id + '/sync-sheet', { method: 'POST' });
+    if (syncResult.sheetError) alert(actionLabel + ', mas falhou ao sincronizar a planilha: ' + syncResult.sheetError);
+  } catch (e) {
+    alert('Falha ao sincronizar a planilha: ' + e.message);
+  }
+}
+
 function wireCandidateCard(el) {
   toggleRow(el);
   const id = el.dataset.id;
@@ -670,37 +683,38 @@ function wireCandidateCard(el) {
   const approve = el.querySelector('.btn-approve');
   if (approve) approve.addEventListener('click', async () => {
     approve.disabled = true; const original = approve.textContent; approve.textContent = 'Aprovando...';
+    let result;
     try {
       await api('/api/candidates/' + id, { method: 'PATCH', body: JSON.stringify(getFields()) });
-      const result = await api('/api/candidates/' + id + '/approve', { method: 'POST' });
-      // approve() always returns 200 even when writing to the sheet fails (the candidate
-      // itself is still approved either way) — check sheetError explicitly or a failed sync
-      // goes unnoticed, same as it did for Rituária's variations.
-      if (result.sheetError) alert('Candidato aprovado, mas falhou ao sincronizar a planilha: ' + result.sheetError);
+      result = await api('/api/candidates/' + id + '/approve', { method: 'POST' });
     } catch (e) {
       alert('Erro: ' + e.message);
       approve.disabled = false; approve.textContent = original;
+      return;
     }
     await refreshOneCandidate(id);
     await loadStatus();
+    // approve() returns fast without waiting on the sheet sync (see index.js) — do that
+    // separately now, so the click itself doesn't block on a ~1.6s full sheet rewrite.
+    await syncSheetIfNeeded(id, result, 'Candidato aprovado');
   });
   const reject = el.querySelector('.btn-reject');
   if (reject) reject.addEventListener('click', async () => {
     // Rejecting a candidate that's already approved (live in the sheet) removes it from
-    // the feed right away — the backend resyncs immediately (see index.js), so the confirm
-    // text needs to say so, not the softer "sai da fila de revisão" wording used otherwise.
+    // the feed right away — the confirm text needs to say so, not the softer "sai da fila
+    // de revisão" wording used otherwise.
     const wasApproved = el.dataset.status === 'approved';
     const confirmMsg = wasApproved
       ? 'Rejeitar este candidato JÁ APROVADO? Ele será removido da planilha da marca agora.'
       : 'Rejeitar este candidato? Ele sai da fila de revisão (o produto pode voltar a ser proposto numa próxima descoberta).';
     if (!confirm(confirmMsg)) return;
     reject.disabled = true; const original = reject.textContent; reject.textContent = 'Rejeitando...';
-    try {
-      const result = await api('/api/candidates/' + id + '/reject', { method: 'POST' });
-      if (result.sheetError) alert('Candidato rejeitado, mas falhou ao sincronizar a planilha: ' + result.sheetError);
-    } catch (e) { alert('Erro: ' + e.message); reject.disabled = false; reject.textContent = original; }
+    let result;
+    try { result = await api('/api/candidates/' + id + '/reject', { method: 'POST' }); }
+    catch (e) { alert('Erro: ' + e.message); reject.disabled = false; reject.textContent = original; return; }
     await refreshOneCandidate(id);
     await loadStatus();
+    await syncSheetIfNeeded(id, result, 'Candidato rejeitado');
   });
 
   const retryCopy = el.querySelector('.btn-retry-copy');

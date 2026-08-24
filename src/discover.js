@@ -4,11 +4,13 @@
 // No copy is generated yet at this stage — see ai.js / index.js for the accept/reject step.
 
 import {
-  ensureSchema, getSettings, listBrands, getBrand, replaceTopSellers, insertCandidate,
+  ensureSchema, getSettings, listBrands, getBrand, replaceTopSellers, insertCandidate, insertCandidates,
   activeCandidateProductIds, recordRunStart, recordRunEnd, listApprovedCandidates, updateCandidate
 } from './db';
 import { fetchTopSellersByBrand } from './metabase';
-import { listAllProducts, matchProductByTitle, findProductByOfferId, findProductByTitleSearch } from './merchant';
+import {
+  listAllProducts, matchProductByTitle, findProductByOfferId, findProductsByOfferIds, findProductByTitleSearch
+} from './merchant';
 import { suggestPerspectives } from './ai';
 import { queueSheetSync } from './sheets';
 
@@ -133,37 +135,42 @@ async function runBrandDiscovery(env, DB, currentBrand, sellers, brandByKey, var
   const brand = brandByKey.get(normalizeBrandKey(currentBrand));
   const activeProductIds = await activeCandidateProductIds(DB, currentBrand);
 
+  const pendingSellers = sellers.filter((s) => !activeProductIds.has(String(s.merchantProductId)));
+  const alreadyTracked = sellers.length - pendingSellers.length;
+
   // Small/medium catalogs (the default — no setup required): list once per brand, match
   // in memory. Large catalogs (brand.largeCatalog, e.g. Gocase's ~5M SKUs) can't be
-  // listed at all without risking the Worker's memory/execution-time limits, so each
-  // seller is resolved individually via the Merchant API Reports search instead — but
-  // that path needs a one-time per-account developer registration (see merchant.js),
-  // so it stays opt-in per brand rather than a hard dependency for everyone.
+  // listed at all without risking the Worker's memory/execution-time limits, so all
+  // pending sellers' offer ids are resolved in one batched Reports API lookup instead —
+  // still no per-seller sequential query — but that path needs a one-time per-account
+  // developer registration (see merchant.js), so it stays opt-in per brand rather than a
+  // hard dependency for everyone.
   let catalog = null;
   let byOfferId = null;
+  let largeCatalogMatches = null;
   if (!brand.largeCatalog) {
     catalog = await listAllProducts(env, brand.merchantId);
     byOfferId = new Map(catalog.map((p) => [String(p.offerId), p]));
+  } else {
+    largeCatalogMatches = await findProductsByOfferIds(
+      env, brand.merchantId, pendingSellers.map((s) => String(s.merchantProductId))
+    );
   }
 
-  let candidatesCreated = 0;
-  let alreadyTracked = 0;
-  let fuzzyMatched = 0;
-  const skippedProducts = [];
-
-  for (const seller of sellers) {
-    if (activeProductIds.has(String(seller.merchantProductId))) {
-      alreadyTracked++;
-      continue;
-    }
+  // Sellers are independent of each other (matching + suggestPerspectives, an AI call, for
+  // one doesn't depend on another) — same reasoning that justified running brands
+  // concurrently one level up. activeProductIds/byOfferId/catalog/largeCatalogMatches are
+  // read-only here, so sharing them across the parallel sellers is safe; the actual DB
+  // writes are batched once after this resolves, via insertCandidates.
+  const sellerResults = await Promise.all(pendingSellers.map(async (seller) => {
     let product;
     let matchMethod;
     if (brand.largeCatalog) {
-      product = await findProductByOfferId(env, brand.merchantId, seller.merchantProductId);
+      product = largeCatalogMatches.get(String(seller.merchantProductId));
       matchMethod = product ? 'id' : null;
       if (!product) {
         const fuzzy = await findProductByTitleSearch(env, brand.merchantId, seller.title || '');
-        if (fuzzy) { product = fuzzy.product; matchMethod = 'title'; fuzzyMatched++; }
+        if (fuzzy) { product = fuzzy.product; matchMethod = 'title'; }
       }
     } else {
       product = byOfferId.get(String(seller.merchantProductId));
@@ -173,38 +180,46 @@ async function runBrandDiscovery(env, DB, currentBrand, sellers, brandByKey, var
         // vs Shopify-fed catalogs have unrelated ID spaces) — fall back to matching by
         // product name before giving up on this seller entirely.
         const fuzzy = matchProductByTitle(catalog, seller.title || '');
-        if (fuzzy) { product = fuzzy.product; matchMethod = 'title'; fuzzyMatched++; }
+        if (fuzzy) { product = fuzzy.product; matchMethod = 'title'; }
       }
     }
     if (!product) {
-      skippedProducts.push(`${currentBrand}:${seller.merchantProductId}`);
-      continue;
+      return { skipped: `${currentBrand}:${seller.merchantProductId}` };
     }
     const perspectives = await suggestPerspectives(env, product, variantsPerProduct);
-    for (let i = 0; i < perspectives.length; i++) {
-      const p = perspectives[i];
-      await insertCandidate(DB, {
-        merchantProductId: seller.merchantProductId,
-        brand: currentBrand,
-        productTitle: product.title,
-        productDescription: product.description,
-        productLink: product.link,
-        productImage: product.imageLink,
-        productPrice: product.price,
-        productCurrency: product.priceCurrency,
-        ...passthroughFields(product),
-        productGtin: product.gtin,
-        productGoogleCategory: product.googleProductCategory,
-        variantIndex: i + 1,
-        perspectiveLabel: p.label,
-        perspectiveRationale: p.rationale,
-        matchMethod,
-        status: 'awaiting_perspective',
-        createdAt: new Date().toISOString()
-      });
-      candidatesCreated++;
-    }
+    const candidates = perspectives.map((p, i) => ({
+      merchantProductId: seller.merchantProductId,
+      brand: currentBrand,
+      productTitle: product.title,
+      productDescription: product.description,
+      productLink: product.link,
+      productImage: product.imageLink,
+      productPrice: product.price,
+      productCurrency: product.priceCurrency,
+      ...passthroughFields(product),
+      productGtin: product.gtin,
+      productGoogleCategory: product.googleProductCategory,
+      variantIndex: i + 1,
+      perspectiveLabel: p.label,
+      perspectiveRationale: p.rationale,
+      matchMethod,
+      status: 'awaiting_perspective',
+      createdAt: new Date().toISOString()
+    }));
+    return { candidates, fuzzyMatch: matchMethod === 'title' };
+  }));
+
+  let candidatesCreated = 0;
+  let fuzzyMatched = 0;
+  const skippedProducts = [];
+  const allCandidates = [];
+  for (const r of sellerResults) {
+    if (r.skipped) { skippedProducts.push(r.skipped); continue; }
+    allCandidates.push(...r.candidates);
+    candidatesCreated += r.candidates.length;
+    if (r.fuzzyMatch) fuzzyMatched++;
   }
+  await insertCandidates(DB, allCandidates);
 
   return { brand: currentBrand, candidatesCreated, alreadyTracked, fuzzyMatched, skippedProducts };
 }

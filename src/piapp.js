@@ -4,6 +4,8 @@
 // JSON-RPC envelope; the actual tool payload is JSON-encoded again inside
 // result.content[0].text.
 
+import { fetchWithRetry } from './http';
+
 const PIAPP_MCP_URL = 'https://piapp-v2.vercel.app/api/ai/mcp';
 
 function parseSseJsonRpc(text) {
@@ -15,10 +17,14 @@ function parseSseJsonRpc(text) {
   return JSON.parse(dataLines[dataLines.length - 1]);
 }
 
+// Retries on 429/5xx (see http.js) — including for submit_image (generate_image), a
+// costed/billed call. By decision, that risk (a small chance of a duplicate generation on a
+// flaky-but-actually-successful response) is accepted in exchange for not needing a manual
+// retry for ordinary transient blips.
 async function callTool(env, name, args) {
   if (!env.PIAPP_API_KEY) throw new Error('PIAPP_API_KEY não configurado.');
 
-  const response = await fetch(PIAPP_MCP_URL, {
+  const response = await fetchWithRetry(PIAPP_MCP_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${env.PIAPP_API_KEY}`,

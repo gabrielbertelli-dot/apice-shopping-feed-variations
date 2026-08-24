@@ -10,6 +10,8 @@
 // disapproved. See docs/google-shopping-feed-guidelines.md for the full rationale; this
 // file is the executable source of truth for the rules described there.
 
+import { fetchWithRetry } from './http';
+
 const MODEL = 'gpt-5.5';
 const TITLE_MAX = 150;
 const DESCRIPTION_MAX = 1000;
@@ -114,10 +116,14 @@ function finalizeDescription(raw) {
 
 // Calls GoBeaute's own AI proxy (OpenAI-compatible chat completions format) instead of
 // a model provider directly — swap this function if the proxy contract ever changes.
+// Retries on 429/5xx (see http.js) — by decision, this applies even to a paid/costed call
+// like this one, accepting a small risk of a duplicate generation on a flaky-but-actually-
+// successful response in exchange for not needing a manual "tentar de novo" for ordinary
+// transient blips.
 async function callAI(env, prompt) {
   if (!env.AI_PROXY_TOKEN) throw new Error('AI_PROXY_TOKEN não configurado.');
 
-  const response = await fetch(AI_PROXY_URL, {
+  const response = await fetchWithRetry(AI_PROXY_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${env.AI_PROXY_TOKEN}`,

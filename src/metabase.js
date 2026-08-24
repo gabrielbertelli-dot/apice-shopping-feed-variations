@@ -2,6 +2,8 @@
 // We deliberately avoid building native SQL against the warehouse schema — the card
 // query is the contract, so this keeps working even if the underlying tables change.
 
+import { fetchWithRetry } from './http';
+
 // Patterns tuned against the real "top sellers por marca" question (Yampi/beauty brands,
 // gold.vw_yampi_line_items): columns come back as bu, sku, produto, pct_receita_bu.
 const ID_PATTERN = /(merchant|product|item|offer).*id|^id$|^sku$/i;
@@ -27,7 +29,7 @@ export async function fetchTopSellersByBrand(env, settings) {
     throw new Error('METABASE_URL / METABASE_API_KEY não configurados.');
   }
 
-  const response = await fetch(`${env.METABASE_URL.replace(/\/$/, '')}/api/card/${settings.metabase_card_id}/query`, {
+  const response = await fetchWithRetry(`${env.METABASE_URL.replace(/\/$/, '')}/api/card/${settings.metabase_card_id}/query`, {
     method: 'POST',
     headers: {
       'x-api-key': env.METABASE_API_KEY,

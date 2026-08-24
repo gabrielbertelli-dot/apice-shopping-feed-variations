@@ -8,6 +8,7 @@
 // doesn't need the Reports path never depends on that registration being done.
 
 import { getGoogleAccessToken, SCOPES } from './google';
+import { fetchWithRetry } from './http';
 
 const CONTENT_BASE = 'https://shoppingcontent.googleapis.com/content/v2.1';
 const REPORTS_BASE = 'https://merchantapi.googleapis.com/reports/v1';
@@ -55,7 +56,7 @@ async function fetchProductsPage(env, merchantId, pageToken) {
   const url = new URL(`${CONTENT_BASE}/${merchantId}/products`);
   url.searchParams.set('maxResults', '250');
   if (pageToken) url.searchParams.set('pageToken', pageToken);
-  const response = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+  const response = await fetchWithRetry(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`Falha ao listar produtos no Merchant Center (${response.status}): ${text}`);
@@ -98,7 +99,7 @@ export async function listAllProducts(env, merchantId) {
 export async function getProductById(env, merchantId, id) {
   if (!merchantId) throw new Error('merchantId não informado.');
   const token = await getGoogleAccessToken(env, SCOPES.BOTH);
-  const response = await fetch(`${CONTENT_BASE}/${merchantId}/products/${encodeURIComponent(id)}`, {
+  const response = await fetchWithRetry(`${CONTENT_BASE}/${merchantId}/products/${encodeURIComponent(id)}`, {
     headers: { Authorization: `Bearer ${token}` }
   });
   if (!response.ok) {
@@ -116,7 +117,7 @@ export async function getProductById(env, merchantId, id) {
 async function searchProductView(env, merchantId, whereClause) {
   if (!merchantId) throw new Error('merchantId não informado.');
   const token = await getGoogleAccessToken(env, SCOPES.BOTH);
-  const response = await fetch(`${REPORTS_BASE}/accounts/${merchantId}/reports:search`, {
+  const response = await fetchWithRetry(`${REPORTS_BASE}/accounts/${merchantId}/reports:search`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ query: `SELECT id, offer_id, title FROM product_view WHERE ${whereClause}` })
@@ -141,6 +142,25 @@ export async function findProductByOfferId(env, merchantId, offerId) {
   const rows = await searchProductView(env, merchantId, `offer_id = '${escapeMcql(offerId)}'`);
   if (!rows.length) return null;
   return getProductById(env, merchantId, rows[0].id);
+}
+
+// Batched counterpart — discover.js used to call findProductByOfferId once per seller for
+// largeCatalog brands (one sequential Reports query + Content API fetch per product, worse
+// still in backfillProductFields which does it per approved candidate). Resolves many offer
+// ids in one OR'd Reports query per chunk instead, then fetches full product data for all
+// matches concurrently.
+export async function findProductsByOfferIds(env, merchantId, offerIds) {
+  const byOfferId = new Map();
+  if (!offerIds.length) return byOfferId;
+  const CHUNK = 50; // keeps each individual MCQL OR clause a reasonable size
+  for (let i = 0; i < offerIds.length; i += CHUNK) {
+    const chunk = offerIds.slice(i, i + CHUNK);
+    const clause = chunk.map((id) => `offer_id = '${escapeMcql(id)}'`).join(' OR ');
+    const rows = await searchProductView(env, merchantId, clause);
+    const products = await Promise.all(rows.map((r) => getProductById(env, merchantId, r.id)));
+    products.forEach((p) => byOfferId.set(String(p.offerId), p));
+  }
+  return byOfferId;
 }
 
 // Fallback for when the sales-data source and the Merchant Center feed come from

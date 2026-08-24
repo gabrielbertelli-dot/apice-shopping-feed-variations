@@ -256,22 +256,45 @@ export async function listTopSellers(DB) {
 
 // --- Variation candidates ---
 
-export async function insertCandidate(DB, c) {
-  await DB.exec(
-    `INSERT INTO variation_candidates
-      (merchant_product_id, brand, product_title, product_description, product_link, product_image, product_price,
+const CANDIDATE_INSERT_COLUMNS = `merchant_product_id, brand, product_title, product_description, product_link, product_image, product_price,
        product_currency, product_sale_price, product_short_title, product_type, product_additional_image_links,
        product_gtin, product_google_category, variant_index, perspective_label, perspective_rationale,
-       match_method, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      c.merchantProductId, c.brand, c.productTitle, c.productDescription || null, c.productLink, c.productImage,
-      c.productPrice, c.productCurrency, c.productSalePrice || null, c.productShortTitle || null,
-      c.productType || null, c.productAdditionalImageLinks || null, c.productGtin, c.productGoogleCategory,
-      c.variantIndex, c.perspectiveLabel, c.perspectiveRationale || null, c.matchMethod || null,
-      c.status || 'awaiting_perspective', c.createdAt
-    ]
+       match_method, status, created_at`; // 20 columns
+const CANDIDATE_INSERT_PLACEHOLDERS = '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+
+function candidateInsertParams(c) {
+  return [
+    c.merchantProductId, c.brand, c.productTitle, c.productDescription || null, c.productLink, c.productImage,
+    c.productPrice, c.productCurrency, c.productSalePrice || null, c.productShortTitle || null,
+    c.productType || null, c.productAdditionalImageLinks || null, c.productGtin, c.productGoogleCategory,
+    c.variantIndex, c.perspectiveLabel, c.perspectiveRationale || null, c.matchMethod || null,
+    c.status || 'awaiting_perspective', c.createdAt
+  ];
+}
+
+export async function insertCandidate(DB, c) {
+  await DB.exec(
+    `INSERT INTO variation_candidates (${CANDIDATE_INSERT_COLUMNS}) VALUES ${CANDIDATE_INSERT_PLACEHOLDERS}`,
+    candidateInsertParams(c)
   );
+}
+
+// Batched counterpart — discover.js used to call insertCandidate once per variant
+// (variants_per_product × top_n_per_brand inserts, fully sequential). 20 columns/row, so 4
+// rows/statement (80 bound params) stays comfortably under the ~100-param-per-statement
+// cap confirmed empirically on this platform's SQLite (6 rows × 15 cols = 90 worked for the
+// old catalog-cache upsert; this leaves a bit more margin since the exact ceiling between
+// 90 and 100 was never pinned down precisely).
+const CANDIDATE_INSERT_BATCH = 4;
+
+export async function insertCandidates(DB, candidates) {
+  if (!candidates.length) return;
+  for (let i = 0; i < candidates.length; i += CANDIDATE_INSERT_BATCH) {
+    const chunk = candidates.slice(i, i + CANDIDATE_INSERT_BATCH);
+    const placeholders = chunk.map(() => CANDIDATE_INSERT_PLACEHOLDERS).join(', ');
+    const params = chunk.flatMap(candidateInsertParams);
+    await DB.exec(`INSERT INTO variation_candidates (${CANDIDATE_INSERT_COLUMNS}) VALUES ${placeholders}`, params);
+  }
 }
 
 const CANDIDATE_COLUMNS = `id, merchant_product_id, brand, product_title, product_description, product_link, product_image,

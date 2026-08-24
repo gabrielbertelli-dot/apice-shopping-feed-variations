@@ -3,6 +3,7 @@
 // separate primary feed — it never touches the Shopify-synced feed.
 
 import { getGoogleAccessToken, SCOPES } from './google';
+import { fetchWithRetry } from './http';
 
 const SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 
@@ -46,7 +47,7 @@ export async function syncApprovedFeed(env, sheetId, tabName, approvedCandidates
 
   // Clear the tab first so removed/rejected variations don't linger as stale rows.
   const clearUrl = `${SHEETS_BASE}/${sheetId}/values/${encodeURIComponent(tab)}:clear`;
-  const clearResp = await fetch(clearUrl, {
+  const clearResp = await fetchWithRetry(clearUrl, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` }
   });
@@ -56,7 +57,7 @@ export async function syncApprovedFeed(env, sheetId, tabName, approvedCandidates
   }
 
   const updateUrl = `${SHEETS_BASE}/${sheetId}/values/${encodeURIComponent(`${tab}!A1`)}?valueInputOption=RAW`;
-  const updateResp = await fetch(updateUrl, {
+  const updateResp = await fetchWithRetry(updateUrl, {
     method: 'PUT',
     headers: {
       Authorization: `Bearer ${token}`,

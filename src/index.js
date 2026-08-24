@@ -360,6 +360,10 @@ app.post('/api/candidates/:id/image/approve', async (c) => {
   return c.json({ ok: true });
 });
 
+// Only flips the status — the sheet sync is a separate follow-up call the dashboard makes
+// right after (POST .../sync-sheet), same "return fast, do the slow part after" split as
+// perspective/accept + generate-copy. A full clear+rewrite of a brand's sheet was confirmed
+// to take ~1.6s; there's no reason a click on Approve should block on that.
 app.post('/api/candidates/:id/approve', async (c) => {
   await ensureSchema(c.env.DB);
   const id = c.req.param('id');
@@ -373,22 +377,11 @@ app.post('/api/candidates/:id/approve', async (c) => {
   }
 
   await updateCandidate(c.env.DB, id, { status: 'approved', approvedAt: new Date().toISOString() });
-
-  try {
-    const brand = await getBrand(c.env.DB, candidate.brand);
-    if (!brand) throw new Error(`Marca "${candidate.brand}" não está mais cadastrada.`);
-    // Queued (not called directly) so two near-simultaneous approvals for this brand can't
-    // interleave their sheet writes and silently drop one of them — see sheets.js.
-    const result = await queueSheetSync(c.env, candidate.brand, brand.sheetId, brand.sheetTabName,
-      () => listApprovedCandidates(c.env.DB, candidate.brand));
-    return c.json({ ok: true, sheet: result });
-  } catch (err) {
-    return c.json({ ok: true, sheetError: String(err.message || err) });
-  }
+  return c.json({ ok: true, needsSync: true });
 });
 
-// Rejecting a candidate that was already approved (live in the brand's sheet) removes it
-// from the feed right away — same queued resync as approve(), not just a status flip.
+// Rejecting a candidate that was already approved (live in the brand's sheet) needs the
+// sheet resynced too — same needsSync flag, same follow-up call, as approve() above.
 app.post('/api/candidates/:id/reject', async (c) => {
   await ensureSchema(c.env.DB);
   const id = c.req.param('id');
@@ -397,9 +390,17 @@ app.post('/api/candidates/:id/reject', async (c) => {
   const wasApproved = candidate.status === 'approved';
 
   await updateCandidate(c.env.DB, id, { status: 'rejected' });
+  return c.json({ ok: true, needsSync: wasApproved });
+});
 
-  if (!wasApproved) return c.json({ ok: true });
-
+// Called by the dashboard right after approve()/reject() when needsSync is true. Queued
+// (not called directly) so two near-simultaneous approvals for the same brand can't
+// interleave their sheet writes and silently drop one of them — see sheets.js.
+app.post('/api/candidates/:id/sync-sheet', async (c) => {
+  await ensureSchema(c.env.DB);
+  const id = c.req.param('id');
+  const candidate = await getCandidate(c.env.DB, id);
+  if (!candidate) return c.json({ error: 'candidato não encontrado' }, 404);
   try {
     const brand = await getBrand(c.env.DB, candidate.brand);
     if (!brand) throw new Error(`Marca "${candidate.brand}" não está mais cadastrada.`);

@@ -1,6 +1,8 @@
 // Google OAuth2 (service account, JWT bearer flow) shared by merchant.ts and sheets.ts.
 // Uses Web Crypto (RS256) since Cloudflare Workers has no Node crypto module.
 
+import { fetchWithRetry } from './http';
+
 let cachedToken = null; // { accessToken, expiresAt, scope }
 let inFlight = null;    // Promise<string> currently fetching a fresh token, or null
 
@@ -77,7 +79,7 @@ export async function getGoogleAccessToken(env, scope) {
       const serviceAccount = JSON.parse(env.GOOGLE_SERVICE_ACCOUNT_JSON);
       const assertion = await signJwt(serviceAccount, scope);
 
-      const response = await fetch('https://oauth2.googleapis.com/token', {
+      const response = await fetchWithRetry('https://oauth2.googleapis.com/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
