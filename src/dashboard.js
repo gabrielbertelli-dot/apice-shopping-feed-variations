@@ -28,13 +28,14 @@ export const DASHBOARD_HTML = `<!doctype html>
   .detail textarea, .detail input[type=text], .brand-row input[type=text] { width: 100%; margin-top: 4px; font-family: inherit; display: block; }
   .row-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid #8884; border-radius: 10px; cursor: pointer; border-left: 4px solid #8884; }
   .row-item:hover { background: #88888818; }
+  .row-item:focus-visible { outline: 2px solid #2563eb55; outline-offset: -2px; }
   .row-item.urgent { border-left-color: #d97706; }
   .row-item.review { border-left-color: #2563eb; }
   .row-item.done { border-left-color: #16a34a; }
   .row-item .row-thumb { width: 34px; height: 34px; border-radius: 6px; object-fit: cover; flex-shrink: 0; }
   .row-item .row-main { flex: 1; min-width: 0; }
   .row-item .row-title { font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .row-item .row-sub { font-size: 0.75rem; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-item .row-sub { font-size: 0.75rem; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .row-item .chevron { flex-shrink: 0; color: #888; transition: transform .15s ease; }
   .candidate-wrap.expanded .row-item .chevron { transform: rotate(180deg); }
   .candidate-wrap .detail { display: none; padding: 14px; border: 1px solid #8884; border-top: none; border-radius: 0 0 10px 10px; }
@@ -73,7 +74,8 @@ export const DASHBOARD_HTML = `<!doctype html>
   .brand-grid label { font-size: 0.8rem; display: block; }
   .brand-grid .checkbox-field { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; }
   .brand-grid .checkbox-field input { width: auto; }
-  table.brands { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+  .table-scroll { overflow-x: auto; margin-bottom: 16px; }
+  table.brands { width: 100%; border-collapse: collapse; margin-bottom: 0; }
   table.brands th, table.brands td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #8884; font-size: 0.85rem; }
   table.brands tbody tr:hover td { background: #88888818; }
   .tabs { display: flex; gap: 4px; border-bottom: 1px solid #8884; margin-bottom: 24px; overflow-x: auto; }
@@ -144,7 +146,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     </section>
 
     <section>
-      <details id="approved-details">
+      <details>
         <summary class="section-summary">Aprovados (na planilha) <span class="count" id="count-approved"></span></summary>
         <div id="approved" style="margin-top: 12px;"></div>
       </details>
@@ -154,7 +156,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   <div class="tab-panel" id="tab-brands" hidden>
     <section>
       <h2>Marcas cadastradas</h2>
-      <table class="brands" id="brands-table"></table>
+      <div class="table-scroll"><table class="brands" id="brands-table"></table></div>
       <div class="brand-row">
         <div class="brand-grid">
           <label>Nome da marca<div class="help">Precisa bater com o nome usado no Metabase (a comparação já ignora maiúsculas/minúsculas).</div><input type="text" id="brand-name" placeholder="Ex: Ápice"></label>
@@ -504,20 +506,39 @@ function fuzzyBadge(c) {
 function toggleRow(el, onExpand) {
   const row = el.querySelector('.row-item');
   let expandedOnce = false;
-  row.addEventListener('click', (e) => {
-    if (e.target.closest('button, input, textarea, a, select, label')) return;
+  const doToggle = () => {
     el.classList.toggle('expanded');
+    row.setAttribute('aria-expanded', String(el.classList.contains('expanded')));
     if (onExpand && !expandedOnce && el.classList.contains('expanded')) {
       expandedOnce = true;
       onExpand();
     }
+  };
+  // Keyboard-navigable: the row is otherwise just a <div> with a click handler, unreachable
+  // without a mouse. tabindex/role make it a focus stop a screen reader announces as a
+  // button; Enter/Space mirror the native <button> activation keys.
+  row.setAttribute('tabindex', '0');
+  row.setAttribute('role', 'button');
+  // Reflects whatever expanded state the card was rendered with — refreshOneCandidate can
+  // hand this an el that already has the 'expanded' class (restoring prior state) before
+  // wiring it up, so this must read that instead of always starting from "false".
+  row.setAttribute('aria-expanded', String(el.classList.contains('expanded')));
+  row.addEventListener('click', (e) => {
+    if (e.target.closest('button, input, textarea, a, select, label')) return;
+    doToggle();
+  });
+  row.addEventListener('keydown', (e) => {
+    if (e.target.closest('button, input, textarea, a, select, label')) return;
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    doToggle();
   });
 }
 
 function perspectiveCard(c) {
   const thumb = c.productImage
-    ? '<img class="row-thumb" src="' + esc(c.productImage) + '">'
-    : '<span class="status-dot amber"></span>';
+    ? '<img class="row-thumb" src="' + esc(c.productImage) + '" alt="">'
+    : '<span class="status-dot amber" title="Aguardando decisão sobre a perspectiva" aria-label="Aguardando decisão sobre a perspectiva"></span>';
   return '<div class="candidate-wrap" data-id="' + c.id + '">' +
     '<div class="row-item urgent">' + thumb +
       '<div class="row-main">' +
@@ -602,7 +623,10 @@ function candidateCard(c) {
   const needsImageReview = imgStatus === 'preview';
   const rowClass = c.status === 'approved' ? 'done' : (needsImageReview || imgStatus === 'failed' || copyFailed ? 'urgent' : 'review');
   const dotClass = copyGenerating ? 'amber' : (copyFailed ? 'red' : (IMAGE_STATUS_DOT[imgStatus] || 'gray'));
-  const thumb = previewImg ? '<img class="row-thumb" src="' + esc(previewImg) + '">' : '<span class="status-dot ' + dotClass + '"></span>';
+  const dotLabel = copyGenerating ? 'Gerando copy' : (copyFailed ? 'Falha ao gerar copy' : (IMAGE_STATUS_LABEL[imgStatus] || imgStatus));
+  const thumb = previewImg
+    ? '<img class="row-thumb" src="' + esc(previewImg) + '" alt="">'
+    : '<span class="status-dot ' + dotClass + '" title="' + esc(dotLabel) + '" aria-label="' + esc(dotLabel) + '"></span>';
 
   let imageSection =
     '<div class="row" style="margin-top:0;">' +
@@ -616,7 +640,7 @@ function candidateCard(c) {
     '</div>' +
     '<label>Prompt da imagem (edite antes de gerar/regerar)' +
     '<textarea class="f-image-prompt" rows="3" placeholder="Carregando sugestão…">' + esc(c.imagePrompt || '') + '</textarea></label>' +
-    (previewImg ? '<img class="thumb" src="' + esc(previewImg) + '">' : '') +
+    (previewImg ? '<img class="thumb" src="' + esc(previewImg) + '" alt="Imagem gerada para ' + esc(c.merchantProductId) + ' (' + esc(IMAGE_STATUS_LABEL[imgStatus] || imgStatus) + ')">' : '') +
     (imgStatus === 'preview' ? '<div class="warn">Preview gerado — revise antes de aprovar o candidato.</div>' : '') +
     (imgStatus === 'approved' ? '<div class="status active" style="display:inline-block;margin-bottom:8px;">✓ imagem aprovada</div>' : '') +
     (imgStatus === 'failed' ? '<div class="warn">Falha ao gerar: ' + esc(c.imageError || '') + '</div>' : '') +
