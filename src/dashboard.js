@@ -262,7 +262,11 @@ function showCandidateWarn(id, message) {
   const el = document.querySelector('.candidate-wrap[data-id="' + id + '"]');
   const detail = el && el.querySelector('.detail');
   if (!detail) return;
-  const existing = detail.querySelector('.inline-warn');
+  // Two independent follow-up calls can each want to warn about the same approve/reject
+  // click (e.g. the price-refresh check failing AND the sheet sync failing right after) —
+  // only dedup an identical repeat of the same message, don't let a second distinct warning
+  // silently wipe out the first one.
+  const existing = [...detail.querySelectorAll('.inline-warn')].find((n) => n.textContent === message);
   if (existing) existing.remove();
   const warn = document.createElement('div');
   warn.className = 'warn inline-warn';
@@ -841,6 +845,13 @@ function wireCandidateCard(el) {
     }
     await refreshOneCandidate(id);
     await loadStatus();
+    // approve() best-effort refreshes price/sale_price from Merchant Center before locking
+    // the candidate in (see index.js) — if that lookup failed, the candidate still approved
+    // with whatever price it already had, so flag it instead of silently publishing a
+    // possibly-stale price.
+    if (result && result.priceRefreshError) {
+      showCandidateWarn(id, 'Candidato aprovado, mas não foi possível conferir o preço atual no Merchant Center: ' + result.priceRefreshError);
+    }
     // approve() returns fast without waiting on the sheet sync (see index.js) — do that
     // separately now, so the click itself doesn't block on a ~1.6s full sheet rewrite.
     await syncSheetIfNeeded(id, result, 'Candidato aprovado');

@@ -19,15 +19,27 @@ import { queueSheetSync } from './sheets';
 // them case-sensitively silently drops an entire brand's top sellers the moment they differ
 // by case (confirmed case: Kokeshi was registered as "Kokeshi", Metabase's query returns
 // "kokeshi" — every run skipped it with candidatesCreated: 0 and no visible error, since
-// skippedBrands only surfaces in the all-brands run-now message, easy to miss).
+// skippedBrands only surfaces in the all-brands run-now message, easy to miss). Also strips
+// accents (NFD + drop combining marks) for the same reason: brands are now registered in
+// lowercase-no-accent form (e.g. "apice", "rituaria") but Metabase's `bu` column may still
+// return the accented spelling ("Ápice", "Rituária") — without this, that split would
+// reproduce the exact same silent-skip bug under a different guise.
 function normalizeBrandKey(name) {
-  return String(name || '').trim().toLowerCase();
+  return String(name || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
 // Original-product fields the auxiliary feed (src/sheets.js) needs verbatim — never
 // AI-generated, just copied through from whatever the Merchant Center product has.
+// productPrice/productCurrency were missing here for a while: they got set once at
+// insertCandidate time (discovery) and never again, so a candidate that sat in review
+// for days/weeks could sync a stale `price` to the live feed even after a price change —
+// unlike productSalePrice, which this function did already refresh. See
+// refreshCandidatePriceFields below, which is what actually calls this with a freshly
+// re-fetched product right before a candidate's price gets locked into the feed.
 function passthroughFields(product) {
   return {
+    productPrice: product.price,
+    productCurrency: product.priceCurrency,
     productSalePrice: product.salePrice,
     productShortTitle: product.shortTitle,
     productType: product.productTypes && product.productTypes.length ? product.productTypes.join(' | ') : null,
@@ -35,6 +47,53 @@ function passthroughFields(product) {
       ? product.additionalImageLinks.join(',')
       : null
   };
+}
+
+// Re-resolves a candidate's product in the brand's Merchant Center account right now — same
+// id-then-title-fallback resolution runDiscovery/backfillProductFields already used, pulled
+// out so both of those and refreshCandidatePriceFields share one implementation instead of
+// three copies drifting apart. `catalogCache` (merchantId -> {catalog, byOfferId}) is optional
+// and only helps non-largeCatalog brands avoid re-listing the whole catalog per candidate.
+async function resolveCurrentProduct(env, brand, candidate, catalogCache) {
+  if (brand.largeCatalog) {
+    let product = await findProductByOfferId(env, brand.merchantId, candidate.merchantProductId);
+    if (!product) {
+      const fuzzy = await findProductByTitleSearch(env, brand.merchantId, candidate.productTitle || '');
+      if (fuzzy) product = fuzzy.product;
+    }
+    return product;
+  }
+
+  let entry = catalogCache && catalogCache.get(brand.merchantId);
+  if (!entry) {
+    const catalog = await listAllProducts(env, brand.merchantId);
+    entry = { catalog, byOfferId: new Map(catalog.map((p) => [String(p.offerId), p])) };
+    if (catalogCache) catalogCache.set(brand.merchantId, entry);
+  }
+  let product = entry.byOfferId.get(String(candidate.merchantProductId));
+  if (!product) {
+    const fuzzy = matchProductByTitle(entry.catalog, candidate.productTitle || '');
+    if (fuzzy) product = fuzzy.product;
+  }
+  return product;
+}
+
+// Called from index.js's /approve route, right before a candidate's status flips to
+// 'approved' — that's the moment its price/sale_price get locked into the live feed sheet
+// (sync-sheet just copies whatever is on the candidate row, see src/sheets.js). Without this,
+// a candidate discovered days/weeks earlier would carry whatever price Merchant Center had
+// back then, even if it changed since. Best-effort: callers should not block approval on this
+// failing (a Merchant Center hiccup shouldn't stop a human from approving), just surface the
+// error so it's visible.
+export async function refreshCandidatePriceFields(env, candidate) {
+  const DB = env.DB;
+  const brand = await getBrand(DB, candidate.brand);
+  if (!brand) throw new Error(`Marca "${candidate.brand}" não está mais cadastrada.`);
+  const product = await resolveCurrentProduct(env, brand, candidate);
+  if (!product) {
+    throw new Error(`Produto "${candidate.productTitle}" não foi encontrado no Merchant Center — preço não pôde ser conferido.`);
+  }
+  await updateCandidate(DB, candidate.id, passthroughFields(product));
 }
 
 export async function runDiscovery(env, { brandName } = {}) {
@@ -309,9 +368,10 @@ export async function runDiscoveryForProduct(env, { brandName, productName } = {
   }
 }
 
-// One-off historical fixup: approved candidates created before productSalePrice/
-// productShortTitle/productType/productAdditionalImageLinks existed have those columns
-// empty. Re-fetches each one's current Merchant Center product and fills them in, then
+// One-off historical fixup: approved candidates created before productPrice/productSalePrice/
+// productShortTitle/productType/productAdditionalImageLinks were kept fresh have those
+// columns stale or empty. Re-fetches each one's current Merchant Center product and fills
+// them in (via the same resolveCurrentProduct used by refreshCandidatePriceFields), then
 // resyncs every affected brand's sheet so the feed actually reflects it.
 export async function backfillProductFields(env, { brandName } = {}) {
   const DB = env.DB;
@@ -339,27 +399,7 @@ export async function backfillProductFields(env, { brandName } = {}) {
       // note) never matches the Merchant Center offerId at all, even for candidates that
       // were successfully matched at discovery time via the title fallback. Retry by title
       // (using the original product_title stored on the candidate) before giving up.
-      let product;
-      let catalog;
-      if (brand.largeCatalog) {
-        product = await findProductByOfferId(env, brand.merchantId, candidate.merchantProductId);
-        if (!product) {
-          const fuzzy = await findProductByTitleSearch(env, brand.merchantId, candidate.productTitle || '');
-          if (fuzzy) product = fuzzy.product;
-        }
-      } else {
-        let entry = catalogCache.get(brand.merchantId);
-        if (!entry) {
-          catalog = await listAllProducts(env, brand.merchantId);
-          entry = { catalog, byOfferId: new Map(catalog.map((p) => [String(p.offerId), p])) };
-          catalogCache.set(brand.merchantId, entry);
-        }
-        product = entry.byOfferId.get(String(candidate.merchantProductId));
-        if (!product) {
-          const fuzzy = matchProductByTitle(entry.catalog, candidate.productTitle || '');
-          if (fuzzy) product = fuzzy.product;
-        }
-      }
+      const product = await resolveCurrentProduct(env, brand, candidate, catalogCache);
       if (!product) {
         errors.push(`${candidate.brand}:${candidate.merchantProductId} (${candidate.productTitle}) — produto não encontrado no Merchant Center`);
         continue;

@@ -388,6 +388,8 @@ const CANDIDATE_COLUMN_MAP = {
   perspectiveStatus: 'perspective_status',
   perspectiveFeedback: 'perspective_feedback',
   resolvedPerspective: 'resolved_perspective',
+  productPrice: 'product_price',
+  productCurrency: 'product_currency',
   productSalePrice: 'product_sale_price',
   productShortTitle: 'product_short_title',
   productType: 'product_type',

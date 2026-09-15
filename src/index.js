@@ -5,7 +5,7 @@ import {
   updateCandidate, listApprovedCandidates, listRuns,
   listBrands, upsertBrand, deleteBrand, getBrand, queryRows
 } from './db';
-import { runDiscovery, runDiscoveryForProduct } from './discover';
+import { runDiscovery, runDiscoveryForProduct, refreshCandidatePriceFields } from './discover';
 import { queueSheetSync } from './sheets';
 import { generateCopyForPerspective, suggestPainAndResult } from './ai';
 import { submitImageJob, checkJobs, buildImagePrompt, buildBeforeAfterImagePrompt } from './piapp';
@@ -376,8 +376,21 @@ app.post('/api/candidates/:id/approve', async (c) => {
     return c.json({ error: 'Ainda gerando a imagem — aguarde terminar antes de aprovar.' }, 400);
   }
 
+  // Re-fetch price/sale_price (and the other passthrough fields) from Merchant Center right
+  // now, before the candidate's status locks in what sync-sheet will copy verbatim into the
+  // live feed. A candidate can sit in review for days/weeks after discovery, so trusting the
+  // discovery-time snapshot here could publish a stale price. Best-effort: a Merchant Center
+  // hiccup shouldn't block a human from approving, so this never fails the request — it just
+  // surfaces the error and the candidate keeps whatever price it already had.
+  let priceRefreshError = null;
+  try {
+    await refreshCandidatePriceFields(c.env, candidate);
+  } catch (err) {
+    priceRefreshError = String(err.message || err);
+  }
+
   await updateCandidate(c.env.DB, id, { status: 'approved', approvedAt: new Date().toISOString() });
-  return c.json({ ok: true, needsSync: true });
+  return c.json({ ok: true, needsSync: true, ...(priceRefreshError ? { priceRefreshError } : {}) });
 });
 
 // Rejecting a candidate that was already approved (live in the brand's sheet) needs the
